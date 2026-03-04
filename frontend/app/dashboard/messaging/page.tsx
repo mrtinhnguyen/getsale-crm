@@ -4008,8 +4008,8 @@ export default function MessagingPage() {
                       <li key={r.id} className={clsx('flex items-center justify-between gap-2 text-sm rounded-lg p-2', r.done ? 'bg-muted/30 text-muted-foreground' : 'bg-muted/40')}>
                         <span className="flex-1 truncate">{r.title || new Date(r.remind_at).toLocaleString()}</span>
                         <div className="flex items-center gap-1 shrink-0">
-                          {!r.done && <button type="button" onClick={() => updateReminder(r.id, { done: true }).then(() => leadContext.contact_id && fetchContactReminders(leadContext.contact_id).then(setLeadReminders))} className="p-1 rounded text-green-600 hover:bg-green-500/20" title={t('crm.markDone', 'Выполнено')}><Check className="w-4 h-4" /></button>}
-                          <button type="button" onClick={() => deleteReminder(r.id).then(() => leadContext.contact_id && fetchContactReminders(leadContext.contact_id).then(setLeadReminders))} className="p-1 rounded text-muted-foreground hover:text-destructive">×</button>
+                          {!r.done && <button type="button" onClick={() => { updateReminder(r.id, { done: true }).then(() => { if (leadContext.contact_id) fetchContactReminders(leadContext.contact_id).then(setLeadReminders); }); }} className="p-1 rounded text-green-600 hover:bg-green-500/20" title={t('crm.markDone', 'Выполнено')}><Check className="w-4 h-4" /></button>}
+                          <button type="button" onClick={() => { deleteReminder(r.id).then(() => { if (leadContext.contact_id) fetchContactReminders(leadContext.contact_id).then(setLeadReminders); }); }} className="p-1 rounded text-muted-foreground hover:text-destructive">×</button>
                         </div>
                       </li>
                     ))}

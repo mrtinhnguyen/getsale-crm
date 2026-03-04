@@ -1363,7 +1363,7 @@ function isAccountOwnerName(account: { display_name?: string | null; username?: 
   const d = (account.display_name || '').trim();
   const u = (account.username || '').trim();
   const f = (account.first_name || '').trim();
-  return (d && d === t) || (u && u === t) || (f && f === t);
+  return Boolean((d && d === t) || (u && u === t) || (f && f === t));
 }
 
 async function refreshChatsFromFolders(
