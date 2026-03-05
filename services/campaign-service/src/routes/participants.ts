@@ -1,0 +1,270 @@
+import { Router } from 'express';
+import { Pool } from 'pg';
+import { CampaignParticipantFilter } from '@getsale/types';
+import { Logger } from '@getsale/logger';
+import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+
+interface Deps {
+  pool: Pool;
+  log: Logger;
+}
+
+export function participantsRouter({ pool, log }: Deps): Router {
+  const router = Router();
+
+  router.get('/:id/stats', asyncHandler(async (req, res) => {
+    const statsStartMs = Date.now();
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const campaign = await pool.query(
+      'SELECT id FROM campaigns WHERE id = $1 AND organization_id = $2',
+      [id, organizationId]
+    );
+    if (campaign.rows.length === 0) {
+      throw new AppError(404, 'Campaign not found', ErrorCodes.NOT_FOUND);
+    }
+    const totalRes = await pool.query(
+      'SELECT COUNT(*)::int AS total FROM campaign_participants WHERE campaign_id = $1',
+      [id]
+    );
+    const byStatusRes = await pool.query(
+      `SELECT status, COUNT(*)::int AS cnt FROM campaign_participants WHERE campaign_id = $1 GROUP BY status`,
+      [id]
+    );
+    const totalSendsRes = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM campaign_sends cs JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id WHERE cp.campaign_id = $1`,
+      [id]
+    );
+    const contactsSentRes = await pool.query(
+      `SELECT COUNT(DISTINCT cp.id)::int AS cnt
+       FROM campaign_sends cs
+       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+       WHERE cp.campaign_id = $1`,
+      [id]
+    );
+    const dateRangeRes = await pool.query(
+      `SELECT MIN(cs.sent_at) AS first_send_at, MAX(cs.sent_at) AS last_send_at
+       FROM campaign_sends cs
+       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+       WHERE cp.campaign_id = $1`,
+      [id]
+    );
+    const totalReadRes = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM (
+         SELECT DISTINCT ON (cp.id) cs.message_id AS mid
+         FROM campaign_sends cs
+         JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+         WHERE cp.campaign_id = $1
+         ORDER BY cp.id, cs.sent_at
+       ) first_sends
+       JOIN messages m ON m.id = first_sends.mid AND m.status = 'read'`,
+      [id]
+    );
+    const totalSharedRes = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM conversations WHERE campaign_id = $1 AND shared_chat_created_at IS NOT NULL`,
+      [id]
+    );
+    const avgTimeToSharedRes = await pool.query(
+      `SELECT AVG(EXTRACT(EPOCH FROM (c.shared_chat_created_at - fs.first_sent_at)) / 3600.0) AS avg_hours
+       FROM conversations c
+       JOIN LATERAL (
+         SELECT MIN(cs.sent_at) AS first_sent_at
+         FROM campaign_sends cs
+         JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+         WHERE cp.campaign_id = c.campaign_id AND cp.bd_account_id = c.bd_account_id AND cp.channel_id = c.channel_id
+       ) fs ON fs.first_sent_at IS NOT NULL
+       WHERE c.campaign_id = $1 AND c.shared_chat_created_at IS NOT NULL`,
+      [id]
+    );
+    const [totalWonRes, totalLostRes, totalRevenueRes, avgTimeToWonRes] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS cnt FROM conversations WHERE campaign_id = $1 AND won_at IS NOT NULL`, [id]),
+      pool.query(`SELECT COUNT(*)::int AS cnt FROM conversations WHERE campaign_id = $1 AND lost_at IS NOT NULL`, [id]),
+      pool.query(`SELECT COALESCE(SUM(revenue_amount), 0)::numeric AS total FROM conversations WHERE campaign_id = $1 AND won_at IS NOT NULL`, [id]),
+      pool.query(
+        `SELECT AVG(EXTRACT(EPOCH FROM (c.won_at - fs.first_sent_at)) / 3600.0) AS avg_hours
+         FROM conversations c
+         JOIN LATERAL (
+           SELECT MIN(cs.sent_at) AS first_sent_at
+           FROM campaign_sends cs
+           JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+           WHERE cp.campaign_id = c.campaign_id AND cp.bd_account_id = c.bd_account_id AND cp.channel_id = c.channel_id
+         ) fs ON fs.first_sent_at IS NOT NULL
+         WHERE c.campaign_id = $1 AND c.won_at IS NOT NULL`,
+        [id]
+      ),
+    ]);
+    const total = totalRes.rows[0]?.total ?? 0;
+    const byStatus: Record<string, number> = {};
+    for (const r of byStatusRes.rows as { status: string; cnt: number }[]) {
+      byStatus[r.status] = r.cnt;
+    }
+    const totalSends = totalSendsRes.rows[0]?.cnt ?? 0;
+    const contactsSent = contactsSentRes.rows[0]?.cnt ?? 0;
+    const totalSent = contactsSent;
+    const totalRead = totalReadRes.rows[0]?.cnt ?? 0;
+    const replied = byStatus.replied ?? 0;
+    const totalReplied = replied;
+    const totalConvertedToSharedChat = totalSharedRes.rows[0]?.cnt ?? 0;
+    const conversionRate = total > 0 ? Math.round((replied / total) * 100) : 0;
+    const readRate = totalSent > 0 ? Math.round((totalRead / totalSent) * 1000) / 10 : 0;
+    const replyRate = totalRead > 0 ? Math.round((totalReplied / totalRead) * 1000) / 10 : 0;
+    const sharedConversionRate = totalReplied > 0 ? Math.round((totalConvertedToSharedChat / totalReplied) * 1000) / 10 : 0;
+    const avgHoursRaw = avgTimeToSharedRes.rows[0] as { avg_hours: string | null } | undefined;
+    const avgTimeToSharedHours = avgHoursRaw?.avg_hours != null ? Math.round(parseFloat(avgHoursRaw.avg_hours) * 10) / 10 : null;
+    const totalWon = (totalWonRes.rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
+    const totalLost = (totalLostRes.rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
+    const totalRevenue = Number((totalRevenueRes.rows[0] as { total: string } | undefined)?.total ?? 0);
+    const avgTimeToWonRaw = avgTimeToWonRes.rows[0] as { avg_hours: string | null } | undefined;
+    const avgTimeToWonHours = avgTimeToWonRaw?.avg_hours != null ? Math.round(parseFloat(avgTimeToWonRaw.avg_hours) * 10) / 10 : null;
+    const winRate = totalReplied > 0 ? Math.round((totalWon / totalReplied) * 1000) / 10 : 0;
+    const revenuePerSent = totalSent > 0 ? Math.round((totalRevenue / totalSent) * 100) / 100 : 0;
+    const revenuePerReply = totalReplied > 0 ? Math.round((totalRevenue / totalReplied) * 100) / 100 : 0;
+    const avgRevenuePerWon = totalWon > 0 ? Math.round((totalRevenue / totalWon) * 100) / 100 : 0;
+    const dr = dateRangeRes.rows[0] as { first_send_at: string | null; last_send_at: string | null };
+    const statsDurationMs = Date.now() - statsStartMs;
+    if (statsDurationMs > 2000) {
+      log.warn({ message: 'GET /campaigns/:id/stats slow', correlation_id: req.correlationId, endpoint: 'GET /campaigns/:id/stats', campaignId: id, durationMs: statsDurationMs, participantsTotal: total, event: 'slow_stats' });
+    }
+    res.json({
+      total,
+      byStatus,
+      totalSends,
+      contactsSent,
+      conversionRate,
+      firstSendAt: dr?.first_send_at ?? null,
+      lastSendAt: dr?.last_send_at ?? null,
+      total_sent: totalSent,
+      total_read: totalRead,
+      total_replied: totalReplied,
+      total_converted_to_shared_chat: totalConvertedToSharedChat,
+      read_rate: readRate,
+      reply_rate: replyRate,
+      conversion_rate: sharedConversionRate,
+      avg_time_to_shared_hours: avgTimeToSharedHours,
+      total_won: totalWon,
+      total_lost: totalLost,
+      total_revenue: totalRevenue,
+      win_rate: winRate,
+      revenue_per_sent: revenuePerSent,
+      revenue_per_reply: revenuePerReply,
+      avg_revenue_per_won: avgRevenuePerWon,
+      avg_time_to_won_hours: avgTimeToWonHours,
+    });
+  }));
+
+  router.get('/:id/analytics', asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const { days = 14 } = req.query;
+    const campaign = await pool.query(
+      'SELECT id FROM campaigns WHERE id = $1 AND organization_id = $2',
+      [id, organizationId]
+    );
+    if (campaign.rows.length === 0) {
+      throw new AppError(404, 'Campaign not found', ErrorCodes.NOT_FOUND);
+    }
+    const daysNum = Math.min(90, Math.max(1, parseInt(String(days), 10)));
+    const sendsByDay = await pool.query(
+      `SELECT cs.sent_at::date AS day, COUNT(DISTINCT cp.id)::int AS sends
+       FROM campaign_sends cs
+       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+       WHERE cp.campaign_id = $1 AND cs.sent_at >= NOW() - ($2::int || ' days')::interval
+       GROUP BY cs.sent_at::date
+       ORDER BY day`,
+      [id, daysNum]
+    );
+    const repliedByDay = await pool.query(
+      `SELECT cp.updated_at::date AS day, COUNT(*)::int AS replied
+       FROM campaign_participants cp
+       WHERE cp.campaign_id = $1 AND cp.status = 'replied' AND cp.updated_at >= NOW() - ($2::int || ' days')::interval
+       GROUP BY cp.updated_at::date
+       ORDER BY day`,
+      [id, daysNum]
+    );
+    res.json({
+      sendsByDay: (sendsByDay.rows as { day: string; sends: number }[]).map((r) => ({ date: r.day, sends: r.sends })),
+      repliedByDay: (repliedByDay.rows as { day: string; replied: number }[]).map((r) => ({ date: r.day, replied: r.replied })),
+    });
+  }));
+
+  router.get('/:id/participants', asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const { page = 1, limit = 50, status, filter } = req.query;
+    const campaign = await pool.query(
+      'SELECT id FROM campaigns WHERE id = $1 AND organization_id = $2',
+      [id, organizationId]
+    );
+    if (campaign.rows.length === 0) {
+      throw new AppError(404, 'Campaign not found', ErrorCodes.NOT_FOUND);
+    }
+    const pageNum = Math.max(1, parseInt(String(page), 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10)));
+    const offset = (pageNum - 1) * limitNum;
+    let whereStatus = '';
+    let whereFilter = '';
+    const params: any[] = [id];
+    const statusParam = status && typeof status === 'string' ? status : (filter && typeof filter === 'string' ? filter : null);
+    if (statusParam === CampaignParticipantFilter.REPLIED) {
+      whereStatus = ' AND cp.status = $2';
+      params.push(CampaignParticipantFilter.REPLIED);
+    } else if (statusParam === CampaignParticipantFilter.NOT_REPLIED) {
+      whereStatus = " AND (cp.status IS NULL OR cp.status != 'replied')";
+    } else if (statusParam === CampaignParticipantFilter.SHARED) {
+      whereFilter = ' AND conv.shared_chat_created_at IS NOT NULL';
+    }
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
+    params.push(limitNum, offset);
+    const result = await pool.query(
+      `SELECT
+         cp.id AS participant_id,
+         cp.contact_id,
+         cp.bd_account_id,
+         cp.channel_id,
+         cp.status AS participant_status,
+         cp.created_at AS participant_created_at,
+         cp.updated_at AS participant_updated_at,
+         COALESCE(NULLIF(TRIM(c.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), ''), c.username, c.telegram_id::text) AS contact_name,
+         conv.id AS conversation_id,
+         conv.shared_chat_created_at,
+         st.name AS pipeline_stage_name,
+         fs.first_sent_at AS sent_at,
+         CASE WHEN cp.status = 'replied' THEN cp.updated_at ELSE NULL END AS replied_at,
+         (m_first.status = 'read') AS first_message_read
+       FROM campaign_participants cp
+       JOIN contacts c ON c.id = cp.contact_id
+       LEFT JOIN LATERAL (
+         SELECT cs.sent_at AS first_sent_at, cs.message_id AS first_message_id
+         FROM campaign_sends cs WHERE cs.campaign_participant_id = cp.id ORDER BY cs.sent_at LIMIT 1
+       ) fs ON true
+       LEFT JOIN messages m_first ON m_first.id = fs.first_message_id
+       LEFT JOIN conversations conv ON conv.campaign_id = cp.campaign_id AND conv.bd_account_id = cp.bd_account_id AND conv.channel = 'telegram' AND conv.channel_id = cp.channel_id
+       LEFT JOIN leads l ON l.id = conv.lead_id
+       LEFT JOIN stages st ON st.id = l.stage_id
+       WHERE cp.campaign_id = $1 ${whereStatus} ${whereFilter}
+       ORDER BY fs.first_sent_at DESC NULLS LAST, cp.created_at
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    );
+    const rows = (result.rows as any[]).map((r) => {
+      const phase = r.shared_chat_created_at ? 'shared' : r.participant_status === 'replied' ? 'replied' : r.first_message_read ? 'read' : 'sent';
+      return {
+        participant_id: r.participant_id,
+        contact_id: r.contact_id,
+        contact_name: r.contact_name ?? '',
+        conversation_id: r.conversation_id,
+        bd_account_id: r.bd_account_id ?? null,
+        channel_id: r.channel_id ?? null,
+        status_phase: phase,
+        pipeline_stage_name: r.pipeline_stage_name ?? null,
+        sent_at: r.sent_at instanceof Date ? r.sent_at.toISOString() : r.sent_at,
+        replied_at: r.replied_at instanceof Date ? r.replied_at.toISOString() : r.replied_at,
+        shared_chat_created_at: r.shared_chat_created_at instanceof Date ? r.shared_chat_created_at.toISOString() : r.shared_chat_created_at,
+      };
+    });
+    res.json(rows);
+  }));
+
+  return router;
+}

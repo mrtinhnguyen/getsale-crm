@@ -92,11 +92,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/api-gateway/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_apigateway_root:/app/node_modules
+      - nm_apigateway_svc:/app/services/api-gateway/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 8000 || exit 1"]
       interval: 10s
@@ -132,11 +134,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/auth-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_auth_root:/app/node_modules
+      - nm_auth_svc:/app/services/auth-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -164,11 +168,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/crm-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_crm_root:/app/node_modules
+      - nm_crm_svc:/app/services/crm-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -199,11 +205,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/messaging-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_messaging_root:/app/node_modules
+      - nm_messaging_svc:/app/services/messaging-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -231,11 +239,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/websocket-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_websocket_root:/app/node_modules
+      - nm_websocket_svc:/app/services/websocket-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -261,11 +271,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/ai-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_ai_root:/app/node_modules
+      - nm_ai_svc:/app/services/ai-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -294,11 +306,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/user-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_user_root:/app/node_modules
+      - nm_user_svc:/app/services/user-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -334,11 +348,13 @@ services:
       start_period: 10s
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/bd-accounts-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_bdaccounts_root:/app/node_modules
+      - nm_bdaccounts_svc:/app/services/bd-accounts-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -366,11 +382,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/pipeline-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_pipeline_root:/app/node_modules
+      - nm_pipeline_svc:/app/services/pipeline-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -399,11 +417,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/automation-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_automation_root:/app/node_modules
+      - nm_automation_svc:/app/services/automation-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -431,11 +451,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/analytics-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_analytics_root:/app/node_modules
+      - nm_analytics_svc:/app/services/analytics-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -463,11 +485,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/team-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_team_root:/app/node_modules
+      - nm_team_svc:/app/services/team-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -497,11 +521,13 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/services/campaign-service/node_modules
-      - /app/shared/types/node_modules
-      - /app/shared/utils/node_modules
-      - /app/shared/events/node_modules
+      - nm_campaign_root:/app/node_modules
+      - nm_campaign_svc:/app/services/campaign-service/node_modules
+      - nm_shared_types:/app/shared/types/node_modules
+      - nm_shared_utils:/app/shared/utils/node_modules
+      - nm_shared_events:/app/shared/events/node_modules
+      - nm_shared_logger:/app/shared/logger/node_modules
+      - nm_shared_core:/app/shared/service-core/node_modules
     networks:
       - getsale-network
 
@@ -536,8 +562,8 @@ services:
       - WS_URL=ws://websocket-service:3004
     volumes:
       - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+      - nm_frontend_node_modules:/app/node_modules
+      - nm_frontend_next:/app/.next
     depends_on:
       api-gateway:
         condition: service_healthy
@@ -558,6 +584,40 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  # Named volumes for dev node_modules/.next — reuse instead of anonymous (avoids hundreds of orphan volumes)
+  nm_shared_types:
+  nm_shared_utils:
+  nm_shared_events:
+  nm_shared_logger:
+  nm_shared_core:
+  nm_apigateway_root:
+  nm_apigateway_svc:
+  nm_auth_root:
+  nm_auth_svc:
+  nm_crm_root:
+  nm_crm_svc:
+  nm_messaging_root:
+  nm_messaging_svc:
+  nm_websocket_root:
+  nm_websocket_svc:
+  nm_ai_root:
+  nm_ai_svc:
+  nm_user_root:
+  nm_user_svc:
+  nm_bdaccounts_root:
+  nm_bdaccounts_svc:
+  nm_pipeline_root:
+  nm_pipeline_svc:
+  nm_automation_root:
+  nm_automation_svc:
+  nm_analytics_root:
+  nm_analytics_svc:
+  nm_team_root:
+  nm_team_svc:
+  nm_campaign_root:
+  nm_campaign_svc:
+  nm_frontend_node_modules:
+  nm_frontend_next:
 
 networks:
   getsale-network:

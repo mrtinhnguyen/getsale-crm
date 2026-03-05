@@ -17,6 +17,8 @@
     "jsonwebtoken": "^9.0.2",
     "speakeasy": "^2.0.0",
     "qrcode": "^1.5.3",
+    "@getsale/service-core": "*",
+    "@getsale/logger": "*",
     "@getsale/utils": "*",
     "@getsale/types": "*",
     "@getsale/events": "*"

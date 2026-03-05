@@ -9,15 +9,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "pg": "^8.11.3",
-    "telegraf": "^4.15.0",
-    "nodemailer": "^6.9.7",
-    "prom-client": "^15.1.0",
-    "@getsale/utils": "*",
-    "@getsale/types": "*",
     "@getsale/events": "*",
-    "@getsale/logger": "*"
+    "@getsale/logger": "*",
+    "@getsale/service-core": "*",
+    "@getsale/types": "*",
+    "@getsale/utils": "*",
+    "express": "^4.18.2",
+    "nodemailer": "^6.9.7",
+    "pg": "^8.11.3",
+    "prom-client": "^15.1.0",
+    "telegraf": "^4.15.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -1,358 +1,114 @@
-import express from 'express';
 import OpenAI from 'openai';
-import { RabbitMQClient, RedisClient } from '@getsale/utils';
-import { EventType, AIDraftGeneratedEvent, Event } from '@getsale/events';
+import { RedisClient } from '@getsale/utils';
+import { EventType } from '@getsale/events';
 import { AIDraftStatus } from '@getsale/types';
-
-const app = express();
-const PORT = process.env.PORT || 3005;
+import { createServiceApp } from '@getsale/service-core';
+import { draftsRouter } from './routes/drafts';
+import { analyzeRouter } from './routes/analyze';
+import { usageRouter } from './routes/usage';
+import { AIRateLimiter } from './rate-limiter';
+import { DRAFT_SYSTEM, PROMPT_VERSION } from './prompts';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || '';
 const isPlaceholder = /your[_\-]?openai|placeholder|your_ope/i.test(OPENAI_API_KEY);
-const isOpenAIKeyConfigured =
-  OPENAI_API_KEY.length > 0 &&
-  !isPlaceholder &&
-  OPENAI_API_KEY.startsWith('sk-');
+const isKeyConfigured = OPENAI_API_KEY.length > 0 && !isPlaceholder && OPENAI_API_KEY.startsWith('sk-');
 
-const openai = isOpenAIKeyConfigured
-  ? new OpenAI({ apiKey: OPENAI_API_KEY })
-  : (null as unknown as OpenAI);
+const models = {
+  draft: process.env.AI_MODEL_DRAFT || 'gpt-4o',
+  analyze: process.env.AI_MODEL_ANALYZE || 'gpt-4o',
+  summarize: process.env.AI_MODEL_SUMMARIZE || 'gpt-4o-mini',
+};
 
-if (!isOpenAIKeyConfigured) {
-  console.warn(
-    '[AI Service] OPENAI_API_KEY is not set or is a placeholder. AI draft generation will return 503. Set a valid key from https://platform.openai.com/account/api-keys'
-  );
-}
+async function main() {
+  const ctx = await createServiceApp({ name: 'ai-service', port: 3005, skipDb: true });
+  const { rabbitmq, log } = ctx;
 
-const redis = new RedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
-const rabbitmq = new RabbitMQClient(
-  process.env.RABBITMQ_URL || 'amqp://getsale:getsale_dev@localhost:5672'
-);
+  const openai = isKeyConfigured ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-(async () => {
-  try {
-    await rabbitmq.connect();
-    await subscribeToEvents();
-  } catch (error) {
-    console.error('Failed to connect to RabbitMQ, service will continue without event subscription:', error);
+  if (!openai) {
+    log.warn({ message: 'OPENAI_API_KEY not configured. AI endpoints will return 503.' });
+  } else {
+    log.info({ message: 'OpenAI configured', models: JSON.stringify(models), prompt_version: PROMPT_VERSION });
   }
-})();
 
-// Subscribe to events that trigger AI actions
-async function subscribeToEvents() {
-  await rabbitmq.subscribeToEvents(
-    [EventType.MESSAGE_RECEIVED, EventType.DEAL_STAGE_CHANGED],
-    async (event) => {
-      if (event.type === EventType.MESSAGE_RECEIVED) {
-        try {
-          const data = event.data as { contactId?: string; content: string };
-          await generateDraft(data.contactId, data.content);
-        } catch (err: unknown) {
-          const e = err as Error & { statusCode?: number };
-          if (e.statusCode === 503 || e.message === OPENAI_NOT_CONFIGURED_MSG) {
-            // Do not log as error; key is simply not configured
-            return;
-          }
-          console.error('Error generating draft (event):', err);
+  const redis = new RedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
+  const maxPerHour = parseInt(process.env.AI_RATE_LIMIT_PER_HOUR || '200', 10);
+  const rateLimiter = new AIRateLimiter(redis, maxPerHour);
+
+  const deps = { openai, redis, rabbitmq, log, rateLimiter, models };
+
+  // Event-driven: generate draft on inbound messages
+  if (rabbitmq.isConnected()) {
+    await rabbitmq.subscribeToEvents(
+      [EventType.MESSAGE_RECEIVED],
+      async (event) => {
+        if (event.type !== EventType.MESSAGE_RECEIVED || !openai) return;
+        const data = event.data as { contactId?: string; content: string; organizationId?: string };
+        const orgId = event.organizationId || (data as Record<string, unknown>).organizationId as string || '';
+
+        if (!orgId) {
+          log.warn({ message: 'Skipping draft generation — no organizationId in event', event_id: event.id });
+          return;
         }
-      }
-    },
-    'events',
-    'ai-service'
-  );
-}
 
-const OPENAI_NOT_CONFIGURED_MSG =
-  'OpenAI API key is not configured or is a placeholder. Set OPENAI_API_KEY to a valid key from https://platform.openai.com/account/api-keys';
+        try {
+          const rateCheck = await rateLimiter.check(orgId);
+          if (!rateCheck.allowed) return;
 
-interface ContactContext {
-  name: string;
-  company: string;
-}
+          const contactKey = data.contactId ? `contact:${data.contactId}` : null;
+          const cached = contactKey ? await redis.get<{ name: string; company: string }>(contactKey) : null;
+          const contact = cached ?? { name: 'Contact', company: 'Company' };
 
-async function generateDraft(contactId: string | undefined, context: string) {
-  if (!isOpenAIKeyConfigured || !openai) {
-    const err = new Error(OPENAI_NOT_CONFIGURED_MSG) as Error & { statusCode?: number };
-    err.statusCode = 503;
-    throw err;
-  }
+          const completion = await openai.chat.completions.create({
+            model: models.draft,
+            messages: [
+              { role: 'system', content: DRAFT_SYSTEM },
+              { role: 'user', content: `Generate a response to this message: "${data.content}" for contact ${contact.name}` },
+            ],
+            temperature: 0.7,
+            max_tokens: 200,
+          });
 
-  try {
-    // Get contact context from cache or CRM service
-    const contactKey = contactId ? `contact:${contactId}` : null;
-    const cached = contactKey ? await redis.get<ContactContext>(contactKey) : null;
-    const contact: ContactContext = cached ?? { name: 'Contact', company: 'Company' };
+          await rateLimiter.increment(orgId);
 
-    // Generate draft using OpenAI (gpt-4o for quality)
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a professional sales assistant. Generate concise, friendly responses. Always respond in the same language as the message you are replying to (e.g. Russian for Russian, English for English).',
-        },
-        {
-          role: 'user',
-          content: `Generate a response to this message: "${context}" for contact ${contact.name}`,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 200,
-    });
+          const draft = {
+            id: crypto.randomUUID(),
+            contactId: data.contactId,
+            content: completion.choices[0].message.content || '',
+            status: AIDraftStatus.GENERATED,
+            generatedBy: 'ai-agent',
+            promptVersion: PROMPT_VERSION,
+            model: models.draft,
+            createdAt: new Date(),
+          };
 
-    const draftContent = completion.choices[0].message.content || '';
+          await redis.set(`draft:${draft.id}`, draft, 3600);
 
-    // Create draft
-    const draft = {
-      id: crypto.randomUUID(),
-      contactId,
-      content: draftContent,
-      status: AIDraftStatus.GENERATED,
-      generatedBy: 'ai-agent',
-      createdAt: new Date(),
-    };
-
-    // Cache draft
-    await redis.set(`draft:${draft.id}`, draft, 3600);
-
-    // Publish event
-    const event: AIDraftGeneratedEvent = {
-      id: crypto.randomUUID(),
-      type: EventType.AI_DRAFT_GENERATED,
-      timestamp: new Date(),
-      organizationId: '', // Should be extracted from contact
-      data: {
-        draftId: draft.id,
-        contactId,
-        content: draftContent,
+          await rabbitmq.publishEvent({
+            id: crypto.randomUUID(),
+            type: EventType.AI_DRAFT_GENERATED,
+            timestamp: new Date(),
+            organizationId: orgId,
+            data: { draftId: draft.id, contactId: data.contactId, content: draft.content },
+          } as any);
+        } catch (err: unknown) {
+          const e = err as Error;
+          log.warn({ message: 'Event-driven draft generation failed', error: e.message, event_id: event.id });
+        }
       },
-    };
-    await rabbitmq.publishEvent(event);
-
-    return draft;
-  } catch (error) {
-    console.error('Error generating draft:', error);
-    throw error;
+      'events',
+      'ai-service'
+    );
   }
+
+  ctx.mount('/api/ai/drafts', draftsRouter(deps));
+  ctx.mount('/api/ai', analyzeRouter(deps));
+  ctx.mount('/api/ai', usageRouter(deps));
+
+  ctx.start();
 }
 
-function getUser(req: express.Request) {
-  return {
-    id: req.headers['x-user-id'] as string,
-    organizationId: req.headers['x-organization-id'] as string,
-  };
-}
-
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'ai-service' });
+main().catch((err) => {
+  console.error('Fatal: AI service failed to start:', err);
+  process.exit(1);
 });
-
-// Generate draft
-app.post('/api/ai/drafts/generate', async (req, res) => {
-  try {
-    const user = getUser(req);
-    const { contactId, dealId, context } = req.body;
-
-    const draft = await generateDraft(contactId, context || '');
-
-    res.json(draft);
-  } catch (error: unknown) {
-    const err = error as Error & { statusCode?: number };
-    if (err.statusCode === 503 || err.message === OPENAI_NOT_CONFIGURED_MSG) {
-      res.status(503).json({
-        error: 'Service Unavailable',
-        code: 'OPENAI_NOT_CONFIGURED',
-        message: OPENAI_NOT_CONFIGURED_MSG,
-      });
-      return;
-    }
-    console.error('Error generating draft:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-/** Conversation Intelligence: structured analysis for CRM (project_summary, risk_zone, recommendations, draft_message). */
-app.post('/api/ai/conversations/analyze', async (req, res) => {
-  try {
-    getUser(req);
-    const { messages: rawMessages } = req.body as { messages?: Array<{ content?: string; direction?: string; created_at?: string }> };
-    const list = Array.isArray(rawMessages) ? rawMessages : [];
-    const messages = list
-      .map((m) => ({
-        content: typeof m.content === 'string' ? m.content.trim() : '',
-        direction: typeof m.direction === 'string' ? m.direction : 'inbound',
-        created_at: typeof m.created_at === 'string' ? m.created_at : '',
-      }))
-      .filter((m) => m.content.length > 0)
-      .slice(-200);
-    if (messages.length === 0) {
-      return res.status(400).json({ error: 'No messages to analyze' });
-    }
-    if (!isOpenAIKeyConfigured || !openai) {
-      return res.status(503).json({
-        error: 'Service Unavailable',
-        code: 'OPENAI_NOT_CONFIGURED',
-        message: OPENAI_NOT_CONFIGURED_MSG,
-      });
-    }
-    const conversationText = messages
-      .map((m) => `[${m.direction} ${m.created_at}]: ${m.content.slice(0, 500)}`)
-      .join('\n');
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a sales CRM assistant. Analyze the conversation and respond with a single JSON object (no markdown, no code block) with these exact keys:
-chat_meta: object (optional, e.g. participant info),
-project_summary: string (brief project/context summary),
-fundraising_status: string (if relevant),
-stage: string (sales stage if inferrable),
-last_activity: string (brief),
-risk_zone: string ("green"|"yellow"|"red"),
-recommendations: array of strings (short action items),
-draft_message: string (suggested next message to send, concise).
-Always write all text fields (project_summary, recommendations, draft_message, etc.) in the same language as the conversation (e.g. Russian for Russian dialogue, English for English).`,
-        },
-        { role: 'user', content: conversationText.slice(-12000) },
-      ],
-      temperature: 0.4,
-      max_tokens: 800,
-    });
-    const raw = completion.choices[0].message.content?.trim() || '{}';
-    let payload: Record<string, unknown>;
-    try {
-      const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, '').trim();
-      payload = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
-      payload = { project_summary: raw, risk_zone: 'yellow', recommendations: [], draft_message: '' };
-    }
-    if (!payload.recommendations || !Array.isArray(payload.recommendations)) {
-      payload.recommendations = [];
-    }
-    res.json(payload);
-  } catch (error: unknown) {
-    const err = error as Error & { statusCode?: number };
-    if (err.statusCode === 503 || err.message === OPENAI_NOT_CONFIGURED_MSG) {
-      return res.status(503).json({
-        error: 'Service Unavailable',
-        code: 'OPENAI_NOT_CONFIGURED',
-        message: OPENAI_NOT_CONFIGURED_MSG,
-      });
-    }
-    console.error('Error analyzing conversation:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Summarize chat messages (for AI panel in messenger)
-app.post('/api/ai/chat/summarize', async (req, res) => {
-  try {
-    getUser(req);
-    const { messages } = req.body as { messages?: Array<{ content?: string; role?: string }> };
-    const list = Array.isArray(messages) ? messages : [];
-    const texts = list
-      .map((m) => (typeof m.content === 'string' ? m.content.trim() : ''))
-      .filter(Boolean)
-      .slice(-50); // last 50 messages
-    if (texts.length === 0) {
-      return res.json({ summary: '', empty: true });
-    }
-    const conversation = texts.join('\n');
-    if (!isOpenAIKeyConfigured || !openai) {
-      return res.status(503).json({
-        error: 'Service Unavailable',
-        code: 'OPENAI_NOT_CONFIGURED',
-        message: OPENAI_NOT_CONFIGURED_MSG,
-      });
-    }
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a concise assistant. Summarize the following chat conversation in 2-4 short sentences. Focus on: main topic, key decisions or requests, and next steps if any. Always write the summary in the same language as the conversation (e.g. Russian for Russian, English for English).',
-        },
-        { role: 'user', content: conversation.slice(-8000) },
-      ],
-      temperature: 0.3,
-      max_tokens: 300,
-    });
-    const summary = completion.choices[0].message.content?.trim() || '';
-    res.json({ summary });
-  } catch (error: unknown) {
-    const err = error as Error & { statusCode?: number };
-    if (err.statusCode === 503 || err.message === OPENAI_NOT_CONFIGURED_MSG) {
-      return res.status(503).json({
-        error: 'Service Unavailable',
-        code: 'OPENAI_NOT_CONFIGURED',
-        message: OPENAI_NOT_CONFIGURED_MSG,
-      });
-    }
-    console.error('Error summarizing chat:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get draft
-app.get('/api/ai/drafts/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const draft = await redis.get(`draft:${id}`);
-
-    if (!draft) {
-      return res.status(404).json({ error: 'Draft not found' });
-    }
-
-    res.json(draft);
-  } catch (error) {
-    console.error('Error fetching draft:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Approve draft
-app.post('/api/ai/drafts/:id/approve', async (req, res) => {
-  try {
-    const user = getUser(req);
-    const { id } = req.params;
-
-    const draft = await redis.get(`draft:${id}`);
-    if (!draft) {
-      return res.status(404).json({ error: 'Draft not found' });
-    }
-
-    // Update draft status
-    const updatedDraft = {
-      ...draft,
-      status: AIDraftStatus.APPROVED,
-      approvedBy: user.id,
-    };
-
-    await redis.set(`draft:${id}`, updatedDraft, 3600);
-
-    // Publish event
-    const approvedEvent = {
-      id: crypto.randomUUID(),
-      type: EventType.AI_DRAFT_APPROVED,
-      timestamp: new Date(),
-      organizationId: user.organizationId,
-      userId: user.id,
-      data: { draftId: id },
-    };
-    await rabbitmq.publishEvent(approvedEvent as Event);
-
-    res.json(updatedDraft);
-  } catch (error) {
-    console.error('Error approving draft:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`AI service running on port ${PORT}`);
-});
-

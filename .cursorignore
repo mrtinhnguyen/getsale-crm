@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+
+# Documentation (include on demand via @ai_docs)
+ai_docs/
+
+# Logs and temp
+logs/
+tmp/
+temp/
+.cache/
+coverage/
+
+# Large generated files
+package-lock.json
+
+# Infrastructure configs (rarely needed in context)
+infrastructure/grafana/dashboards/*.json
+
+# Cursor workspace runtime data
+.cursor/workspace/

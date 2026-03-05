@@ -29,7 +29,7 @@ export async function resolveContact(contactId: string): Promise<{ bd_account_id
 
 /** Контекст лида по lead_id (тот же контракт, что и GET .../conversations/:id/lead-context) */
 export interface LeadContextByLead {
-  conversation_id: string;
+  conversation_id?: string | null;
   lead_id: string;
   contact_id?: string | null;
   contact_name: string;
@@ -38,6 +38,8 @@ export interface LeadContextByLead {
   company_name?: string | null;
   bd_account_id?: string | null;
   channel_id?: string | null;
+  responsible_id?: string | null;
+  responsible_email?: string | null;
   pipeline: { id: string; name: string };
   stage: { id: string; name: string };
   stages: Array<{ id: string; name: string }>;

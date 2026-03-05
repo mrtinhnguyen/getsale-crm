@@ -14,7 +14,11 @@
     "telegram": "^2.26.22",
     "@getsale/utils": "*",
     "@getsale/types": "*",
-    "@getsale/events": "*"
+    "@getsale/events": "*",
+    "@getsale/service-core": "*",
+    "@getsale/logger": "*",
+    "@getsale/service-core": "*",
+    "@getsale/logger": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -57,3 +57,22 @@ docker login registry.digitalocean.com -u <DO_REGISTRY_USERNAME> -p <DO_REGISTRY
 **Не трогать Traefik при деплое:** в `docker-compose.server.yml` задано `name: getsale-crm`, чтобы проект Compose всегда назывался `getsale-crm`. Тогда `docker compose down` в каталоге CRM останавливает только контейнеры CRM и не затрагивает Traefik (другой проект). Для стека Traefik в его compose-файле тоже лучше задать явное имя проекта, например `name: traefik`.
 
 **Миграции не подключаются к БД:** на сервере есть два контейнера Postgres (CRM и другой стек). В compose для миграций указан хост `getsale-crm-postgres`, чтобы подключаться именно к БД CRM. Проверьте: (1) в `/docker/getsale-crm/.env` задан `POSTGRES_PASSWORD` (тот же, что у контейнера postgres); (2) сеть общая: `docker inspect getsale-crm-migrations --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'` и то же для `getsale-crm-postgres` — должен быть `getsale-crm_default`; (3) из контейнера миграций: `docker exec getsale-crm-migrations getent hosts getsale-crm-postgres`.
+
+## Тома (локальная разработка)
+
+В `docker-compose.yml` для dev-сервисов используются **именованные** тома (`nm_*`, `postgres_data`, `redis_data`, `rabbitmq_data`), а не анонимные. Так при каждом `docker compose up` одни и те же тома переиспользуются, и не накапливаются сотни томов с хеш-именами.
+
+**Если уже накопились старые анонимные тома**, их можно удалить одной командой (осторожно: удалятся все тома, не привязанные к контейнерам):
+
+```bash
+docker volume prune -f
+```
+
+Или только «висячие» тома после `docker compose down`:
+
+```bash
+docker compose down
+docker volume prune -f
+```
+
+Именованные тома проекта (`postgres_data`, `redis_data`, `rabbitmq_data`, `nm_*`) при `docker compose down` не удаляются; они удаляются только при `docker compose down -v`.

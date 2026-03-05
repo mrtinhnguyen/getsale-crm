@@ -24,6 +24,12 @@ build/
 *.swo
 *~
 
+# Cursor - ignore runtime data, keep shared config
+.cursor/workspace/active/
+.cursor/workspace/completed/
+.cursor/workspace/failed/
+.cursor/mcp.json
+
 # OS
 .DS_Store
 Thumbs.db
@@ -45,4 +51,3 @@ yarn-error.log*
 tmp/
 temp/
 .cache/
-

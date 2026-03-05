@@ -11,6 +11,8 @@
   "dependencies": {
     "express": "^4.18.2",
     "openai": "^4.20.1",
+    "@getsale/service-core": "*",
+    "@getsale/logger": "*",
     "@getsale/utils": "*",
     "@getsale/types": "*",
     "@getsale/events": "*"

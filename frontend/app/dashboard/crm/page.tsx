@@ -7,7 +7,6 @@ import {
   Plus,
   Building2,
   User,
-  TrendingUp,
   Pencil,
   Trash2,
   ChevronRight,
@@ -24,10 +23,8 @@ import { apiClient } from '@/lib/api/client';
 import {
   fetchCompanies,
   fetchContacts,
-  fetchDeals,
   deleteCompany,
   deleteContact,
-  deleteDeal,
   importContactsFromCsv,
   fetchContactNotes,
   createContactNote,
@@ -36,13 +33,8 @@ import {
   createContactReminder,
   updateReminder,
   deleteReminder,
-  fetchDealNotes,
-  createDealNote,
-  fetchDealReminders,
-  createDealReminder,
   type Company,
   type Contact,
-  type Deal,
   type PaginationMeta,
   type Note,
   type Reminder,
@@ -55,12 +47,10 @@ import { TableSkeleton } from '@/components/ui/Skeleton';
 import Button from '@/components/ui/Button';
 import { CompanyFormModal } from '@/components/crm/CompanyFormModal';
 import { ContactFormModal } from '@/components/crm/ContactFormModal';
-import { DealFormModal } from '@/components/crm/DealFormModal';
 import { AddToFunnelModal } from '@/components/crm/AddToFunnelModal';
-import { formatDealAmount } from '@/lib/format/currency';
 import { clsx } from 'clsx';
 
-type TabId = 'companies' | 'contacts' | 'deals';
+type TabId = 'companies' | 'contacts';
 
 /** Имя контакта для отображения: display_name → имя+фамилия (не "Telegram %") → @username → telegram_id → заглушка */
 function getContactDisplayName(c: Contact): string {
@@ -79,13 +69,12 @@ function getContactDisplayName(c: Contact): string {
 const TABS: { id: TabId; i18nKey: string; icon: typeof Building2 }[] = [
   { id: 'companies', i18nKey: 'companies', icon: Building2 },
   { id: 'contacts', i18nKey: 'contacts', icon: User },
-  { id: 'deals', i18nKey: 'deals', icon: TrendingUp },
 ];
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
 
-const VALID_TABS: TabId[] = ['companies', 'contacts', 'deals'];
+const VALID_TABS: TabId[] = ['companies', 'contacts'];
 
 export default function CRMPage() {
   const { t } = useTranslation();
@@ -102,20 +91,16 @@ export default function CRMPage() {
   const [companiesPagination, setCompaniesPagination] = useState<PaginationMeta | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactsPagination, setContactsPagination] = useState<PaginationMeta | null>(null);
-  const [deals, setDeals] = useState<Deal[]>([]);
-  const [dealsPagination, setDealsPagination] = useState<PaginationMeta | null>(null);
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detailType, setDetailType] = useState<TabId | null>(null);
-  const [detailData, setDetailData] = useState<Company | Contact | Deal | null>(null);
+  const [detailData, setDetailData] = useState<Company | Contact | null>(null);
 
   const [companyModalOpen, setCompanyModalOpen] = useState(false);
   const [companyEdit, setCompanyEdit] = useState<Company | null>(null);
   const [contactModalOpen, setContactModalOpen] = useState(false);
   const [contactEdit, setContactEdit] = useState<Contact | null>(null);
   const [addToFunnelContact, setAddToFunnelContact] = useState<Contact | null>(null);
-  const [dealModalOpen, setDealModalOpen] = useState(false);
-  const [dealEdit, setDealEdit] = useState<Deal | null>(null);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: TabId; id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -132,10 +117,11 @@ export default function CRMPage() {
     if (urlOpenApplied.current) return;
     const tab = searchParams.get('tab');
     const open = searchParams.get('open');
-    if (tab && open && VALID_TABS.includes(tab as TabId)) {
+    const resolvedTab = (tab === 'deals' ? 'contacts' : tab) as TabId;
+    if (resolvedTab && open && VALID_TABS.includes(resolvedTab)) {
       urlOpenApplied.current = true;
-      setActiveTab(tab as TabId);
-      setDetailType(tab as TabId);
+      setActiveTab(resolvedTab);
+      setDetailType(resolvedTab);
       setDetailId(open);
     }
   }, [searchParams]);
@@ -189,31 +175,10 @@ export default function CRMPage() {
     }
   }, [page, searchDebounced]);
 
-  const loadDeals = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchDeals({
-        page,
-        limit: DEFAULT_LIMIT,
-        search: searchDebounced || undefined,
-      });
-      setDeals(res.items);
-      setDealsPagination(res.pagination);
-    } catch (e) {
-      setError(t('crm.loadError'));
-      setDeals([]);
-      setDealsPagination(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [page, searchDebounced]);
-
   useEffect(() => {
     if (activeTab === 'companies') loadCompanies();
-    else if (activeTab === 'contacts') loadContacts();
-    else loadDeals();
-  }, [activeTab, loadCompanies, loadContacts, loadDeals]);
+    else loadContacts();
+  }, [activeTab, loadCompanies, loadContacts]);
 
   useEffect(() => {
     if (!detailId || !detailType) {
@@ -222,32 +187,17 @@ export default function CRMPage() {
     }
     if (detailType === 'companies') {
       apiClient.get(`/api/crm/companies/${detailId}`).then((r) => setDetailData(r.data));
-    } else if (detailType === 'contacts') {
+    } else {
       apiClient.get(`/api/crm/contacts/${detailId}`).then((r) => setDetailData(r.data));
-    } else if (detailType === 'deals') {
-      apiClient.get(`/api/crm/deals/${detailId}`).then((r) => {
-        setDetailData(r.data);
-        setDealEdit(r.data);
-        setDealModalOpen(true);
-        setDetailId(null);
-        setDetailType(null);
-        setDetailData(null);
-      });
     }
   }, [detailId, detailType]);
 
   const refresh = useCallback(() => {
     if (activeTab === 'companies') loadCompanies();
-    else if (activeTab === 'contacts') loadContacts();
-    else loadDeals();
-  }, [activeTab, loadCompanies, loadContacts, loadDeals]);
+    else loadContacts();
+  }, [activeTab, loadCompanies, loadContacts]);
 
-  const openDetail = (type: TabId, id: string, deal?: Deal) => {
-    if (type === 'deals' && deal) {
-      setDealEdit(deal);
-      setDealModalOpen(true);
-      return;
-    }
+  const openDetail = (type: TabId, id: string) => {
     setDetailType(type);
     setDetailId(id);
   };
@@ -257,8 +207,7 @@ export default function CRMPage() {
     setDeleting(true);
     try {
       if (deleteConfirm.type === 'companies') await deleteCompany(deleteConfirm.id);
-      else if (deleteConfirm.type === 'contacts') await deleteContact(deleteConfirm.id);
-      else await deleteDeal(deleteConfirm.id);
+      else await deleteContact(deleteConfirm.id);
       setDeleteConfirm(null);
       if (detailId === deleteConfirm.id) {
         setDetailId(null);
@@ -273,7 +222,7 @@ export default function CRMPage() {
     }
   };
 
-  const pagination = activeTab === 'companies' ? companiesPagination : activeTab === 'contacts' ? contactsPagination : dealsPagination;
+  const pagination = activeTab === 'companies' ? companiesPagination : contactsPagination;
 
   return (
     <div className="space-y-6">
@@ -305,12 +254,6 @@ export default function CRMPage() {
               </Button>
             </>
           )}
-          {activeTab === 'deals' && (
-            <Button onClick={() => { setDealEdit(null); setDealModalOpen(true); }}>
-              <Plus className="w-4 h-4 mr-2" />
-              {t('common.deal')}
-            </Button>
-          )}
         </div>
       </div>
 
@@ -340,7 +283,7 @@ export default function CRMPage() {
       <div className="flex flex-col sm:flex-row gap-4">
         <div className="flex-1">
           <SearchInput
-            placeholder={activeTab === 'companies' ? t('crm.searchCompanies') : activeTab === 'contacts' ? t('crm.searchContacts') : t('crm.searchDeals')}
+            placeholder={activeTab === 'companies' ? t('crm.searchCompanies') : t('crm.searchContacts')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs"
@@ -522,91 +465,6 @@ export default function CRMPage() {
           </>
         )}
 
-        {activeTab === 'deals' && (
-          <>
-            {loading ? (
-              <table className="w-full">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common.deal')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common.company')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.pipelineStage')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.amount')}</th>
-                    <th className="px-6 py-3 w-24" />
-                  </tr>
-                </thead>
-                <TableSkeleton rows={5} cols={4} />
-              </table>
-            ) : (
-              <table className="w-full">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common.deal')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('common.company')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.pipelineStage')}</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.amount')}</th>
-                    <th className="px-6 py-3 w-24" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {deals.map((d) => (
-                    <tr
-                      key={d.id}
-                      className="hover:bg-muted/30 transition-colors cursor-pointer group"
-                      onClick={() => openDetail('deals', d.id, d)}
-                    >
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 rounded-lg bg-primary/10 text-primary">
-                            <TrendingUp className="w-4 h-4" />
-                          </div>
-                          <span className="font-medium text-foreground">{d.title}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">{d.companyName ?? d.company_name ?? '—'}</td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {(d.pipelineName ?? d.pipeline_name ?? '—')} / {(d.stageName ?? d.stage_name ?? '—')}
-                      </td>
-                      <td className="px-6 py-4 text-sm font-medium text-foreground">
-                        {d.value != null ? formatDealAmount(d.value, d.currency) : '—'}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setDealEdit(d); setDealModalOpen(true); }}
-                            className="p-2 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
-                            aria-label={t('crm.editAction')}
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm({ type: 'deals', id: d.id, name: d.title }); }}
-                            className="p-2 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={t('crm.deleteAction')}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                          <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {!loading && deals.length === 0 && (
-              <EmptyState
-                icon={TrendingUp}
-                title={t('crm.noDeals')}
-                description={t('crm.noDealsDesc')}
-                action={<Button onClick={() => setDealModalOpen(true)}>{t('crm.addDeal')}</Button>}
-              />
-            )}
-          </>
-        )}
-
         {pagination && pagination.totalPages > 1 && (
           <div className="px-6 py-4 border-t border-border">
             <Pagination
@@ -627,12 +485,9 @@ export default function CRMPage() {
 
       {/* Карточка компании/контакта как диалог (как карточка сделки) */}
       <Modal
-        isOpen={Boolean(detailId && detailType && detailType !== 'deals')}
+        isOpen={Boolean(detailId && detailType)}
         onClose={() => { setDetailId(null); setDetailType(null); setDetailData(null); }}
-        title={
-          detailType === 'companies' ? t('common.company') :
-          detailType === 'contacts' ? t('common.contact') : t('common.deal')
-        }
+        title={detailType === 'companies' ? t('common.company') : t('common.contact')}
         size="lg"
       >
         {detailData && detailType === 'companies' && (
@@ -673,12 +528,6 @@ export default function CRMPage() {
         contactId={addToFunnelContact?.id ?? ''}
         contactName={addToFunnelContact ? getContactDisplayName(addToFunnelContact) : undefined}
         defaultPipelineId={typeof window !== 'undefined' ? window.localStorage.getItem('pipeline.selectedPipelineId') : null}
-      />
-      <DealFormModal
-        isOpen={dealModalOpen}
-        onClose={() => { setDealModalOpen(false); setDealEdit(null); }}
-        onSuccess={() => { refresh(); setDealModalOpen(false); setDealEdit(null); }}
-        edit={dealEdit}
       />
 
       {/* Delete confirmation */}
@@ -994,106 +843,6 @@ function ContactDetail({
             {t('pipeline.addToFunnel')}
           </Button>
         )}
-        <Button variant="outline" size="sm" onClick={onEdit}>{t('crm.editAction')}</Button>
-        <Button variant="danger" size="sm" onClick={onDelete}>{t('crm.deleteAction')}</Button>
-      </div>
-    </div>
-  );
-}
-
-function DealDetail({
-  deal,
-  onEdit,
-  onDelete,
-  t,
-}: {
-  deal: Deal;
-  onEdit: () => void;
-  onDelete: () => void;
-  t: (key: string) => string;
-}) {
-  const pipelineName = deal.pipelineName ?? deal.pipeline_name ?? '—';
-  const stageName = deal.stageName ?? deal.stage_name ?? '—';
-  const companyName = deal.companyName ?? deal.company_name ?? '—';
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [reminders, setReminders] = useState<Reminder[]>([]);
-  const [noteText, setNoteText] = useState('');
-  const [remindAt, setRemindAt] = useState('');
-  const [remindTitle, setRemindTitle] = useState('');
-  const [addingNote, setAddingNote] = useState(false);
-  const [addingReminder, setAddingReminder] = useState(false);
-
-  const loadNotes = useCallback(() => {
-    fetchDealNotes(deal.id).then(setNotes).catch(() => setNotes([]));
-  }, [deal.id]);
-  const loadReminders = useCallback(() => {
-    fetchDealReminders(deal.id).then(setReminders).catch(() => setReminders([]));
-  }, [deal.id]);
-
-  useEffect(() => { loadNotes(); loadReminders(); }, [loadNotes, loadReminders]);
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-start gap-4">
-        <div className="p-3 rounded-xl bg-primary/10 text-primary">
-          <TrendingUp className="w-8 h-8" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-heading text-lg font-semibold text-foreground">{deal.title}</h3>
-          <p className="text-sm text-muted-foreground mt-1">{companyName}</p>
-        </div>
-      </div>
-      <dl className="grid grid-cols-1 gap-3 text-sm">
-        <div>
-          <dt className="text-muted-foreground">{t('crm.pipelineStage')}</dt>
-          <dd className="font-medium text-foreground">{pipelineName} → {stageName}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">{t('crm.amount')}</dt>
-          <dd className="font-medium text-foreground">
-            {deal.value != null ? formatDealAmount(deal.value, deal.currency) : '—'}
-          </dd>
-        </div>
-      </dl>
-      <div className="border-t border-border pt-4 space-y-4">
-        <h4 className="text-sm font-medium text-foreground flex items-center gap-2">
-          <StickyNote className="w-4 h-4" />
-          {t('crm.notes')}
-        </h4>
-        <ul className="space-y-2 max-h-32 overflow-y-auto">
-          {notes.map((n) => (
-            <li key={n.id} className="flex items-start justify-between gap-2 text-sm bg-muted/40 rounded-lg p-2">
-              <span className="text-foreground flex-1 break-words">{n.content}</span>
-              <button type="button" onClick={() => deleteNote(n.id).then(loadNotes)} className="text-muted-foreground hover:text-destructive shrink-0" aria-label={t('common.delete')}>×</button>
-            </li>
-          ))}
-        </ul>
-        <div className="flex gap-2">
-          <input type="text" value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder={t('crm.addNote')} className="flex-1 px-2 py-1.5 rounded-lg border border-border bg-background text-sm" />
-          <Button size="sm" disabled={!noteText.trim() || addingNote} onClick={async () => { if (!noteText.trim()) return; setAddingNote(true); try { await createDealNote(deal.id, noteText.trim()); setNoteText(''); loadNotes(); } finally { setAddingNote(false); } }}>{addingNote ? '...' : t('common.add')}</Button>
-        </div>
-        <h4 className="text-sm font-medium text-foreground flex items-center gap-2 mt-4">
-          <Bell className="w-4 h-4" />
-          {t('crm.reminders')}
-        </h4>
-        <ul className="space-y-2 max-h-28 overflow-y-auto">
-          {reminders.map((r) => (
-            <li key={r.id} className={clsx('flex items-center justify-between gap-2 text-sm rounded-lg p-2', r.done ? 'bg-muted/30 text-muted-foreground' : 'bg-muted/40')}>
-              <span className="flex-1 truncate">{r.title || new Date(r.remind_at).toLocaleString()}</span>
-              <div className="flex items-center gap-1 shrink-0">
-                {!r.done && <button type="button" onClick={() => updateReminder(r.id, { done: true }).then(loadReminders)} className="p-1 rounded text-green-600 hover:bg-green-500/20" title={t('crm.markDone')}><Check className="w-4 h-4" /></button>}
-                <button type="button" onClick={() => deleteReminder(r.id).then(loadReminders)} className="p-1 rounded text-muted-foreground hover:text-destructive">×</button>
-              </div>
-            </li>
-          ))}
-        </ul>
-        <div className="flex flex-wrap gap-2 items-end">
-          <input type="datetime-local" value={remindAt} onChange={(e) => setRemindAt(e.target.value)} className="px-2 py-1.5 rounded-lg border border-border bg-background text-sm" />
-          <input type="text" value={remindTitle} onChange={(e) => setRemindTitle(e.target.value)} placeholder={t('crm.reminderTitle')} className="w-40 px-2 py-1.5 rounded-lg border border-border bg-background text-sm" />
-          <Button size="sm" disabled={!remindAt || addingReminder} onClick={async () => { if (!remindAt) return; setAddingReminder(true); try { await createDealReminder(deal.id, { remind_at: new Date(remindAt).toISOString(), title: remindTitle.trim() || undefined }); setRemindAt(''); setRemindTitle(''); loadReminders(); } finally { setAddingReminder(false); } }}>{addingReminder ? '...' : t('common.add')}</Button>
-        </div>
-      </div>
-      <div className="flex gap-2 pt-4 border-t border-border">
         <Button variant="outline" size="sm" onClick={onEdit}>{t('crm.editAction')}</Button>
         <Button variant="danger" size="sm" onClick={onDelete}>{t('crm.deleteAction')}</Button>
       </div>

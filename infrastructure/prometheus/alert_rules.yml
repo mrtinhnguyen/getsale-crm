@@ -1,0 +1,79 @@
+groups:
+  - name: service_health
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been unreachable for 2 minutes."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(http_requests_total[5m])) by (job)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.job }}"
+          description: "Error rate above 5% for 5 minutes on {{ $labels.job }}."
+
+      - alert: CriticalErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(http_requests_total[5m])) by (job)
+          > 0.15
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical 5xx error rate on {{ $labels.job }}"
+          description: "Error rate above 15% for 2 minutes on {{ $labels.job }}."
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job))
+          > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p99 latency on {{ $labels.job }}"
+          description: "99th percentile latency above 5s for 5 minutes on {{ $labels.job }}."
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job))
+          > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 latency on {{ $labels.job }}"
+          description: "95th percentile latency above 2s for 10 minutes on {{ $labels.job }}."
+
+  - name: business_metrics
+    rules:
+      - alert: EventPublishFailures
+        expr: rate(event_publish_failed_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ event publish failures"
+          description: "Event publish failure rate above 0.1/s for 5 minutes."
+
+      - alert: AIRateLimitHits
+        expr: rate(http_requests_total{status="429", job="ai-service"}[15m]) > 1
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "AI rate limiting triggered frequently"
+          description: "AI service returning 429 status codes frequently."

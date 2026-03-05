@@ -33,6 +33,9 @@ export interface Lead {
   order_index: number;
   created_at: string;
   updated_at: string;
+  responsible_id?: string | null;
+  responsible_email?: string | null;
+  revenue_amount?: number | null;
   first_name?: string | null;
   last_name?: string | null;
   display_name?: string | null;
@@ -83,7 +86,10 @@ export async function addLeadToPipeline(body: {
   return data;
 }
 
-export async function updateLead(leadId: string, body: { stageId?: string; orderIndex?: number }): Promise<Lead> {
+export async function updateLead(
+  leadId: string,
+  body: { stageId?: string; orderIndex?: number; responsibleId?: string | null; revenueAmount?: number | null }
+): Promise<Lead> {
   const { data } = await apiClient.patch<Lead>(`/api/pipeline/leads/${leadId}`, body);
   return data;
 }

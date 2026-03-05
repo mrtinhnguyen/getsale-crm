@@ -12,8 +12,10 @@ import { PipelineManageModal } from '@/components/pipeline/PipelineManageModal';
 import { LeadCardModal } from '@/components/pipeline/LeadCardModal';
 
 function leadContactName(lead: Lead): string {
+  const display = (lead.display_name ?? '').trim();
+  if (display) return display;
   const parts = [lead.first_name, lead.last_name].filter(Boolean).join(' ').trim();
-  return parts || (lead.display_name ?? '').trim() || (lead.email ?? '').trim() || (lead.telegram_id ?? '').trim() || '—';
+  return parts || (lead.username ?? '').trim() || (lead.email ?? '').trim() || (lead.telegram_id ?? '').trim() || '—';
 }
 
 function toLocalDateKey(date: Date): string {
@@ -153,11 +155,29 @@ export default function PipelinePage() {
     return groups;
   })();
 
-  const timelineLanes = stages.map((stage) => ({
-    laneKey: stage.id,
-    laneLabel: stage.name,
-    leads: filteredLeads.filter((l) => l.stage_id === stage.id),
-  }));
+  // Лейны по ответственному (кто привёл/создал лида), не по стадиям
+  const timelineLanes = (() => {
+    const noCreatorKey = t('pipeline.timelineLaneNoCreator');
+    const byCreator = new Map<string, { label: string; leads: Lead[] }>();
+    for (const lead of filteredLeads) {
+      const key = lead.responsible_id ?? '__none__';
+      if (!byCreator.has(key)) {
+        const label = key === '__none__' ? noCreatorKey : (lead.responsible_email ?? key);
+        byCreator.set(key, { label, leads: [] });
+      }
+      byCreator.get(key)!.leads.push(lead);
+    }
+    const lanes: { laneKey: string; laneLabel: string; leads: Lead[] }[] = [];
+    const noneFirst = [...byCreator.entries()].sort((a, b) => {
+      if (a[0] === '__none__') return 1;
+      if (b[0] === '__none__') return -1;
+      return (a[1].label || '').localeCompare(b[1].label || '');
+    });
+    for (const [laneKey, { label, leads: laneLeads }] of noneFirst) {
+      lanes.push({ laneKey, laneLabel: label, leads: laneLeads });
+    }
+    return lanes;
+  })();
 
   const filteredTimelineLanes = timelineLaneFilter.length === 0
     ? timelineLanes
@@ -190,7 +210,7 @@ export default function PipelinePage() {
     if (loading || filteredTimelineLanes.length === 0) return;
     const el = timelineScrollRef.current;
     if (!el || timelineScrolledToTodayRef.current) return;
-    const firstColWidth = 64;
+    const firstColWidth = 56;
     const dateColWidth = 180;
     const scrollToToday = () => {
       const todayOffset = firstColWidth + DAYS_BACK * dateColWidth;
@@ -578,18 +598,18 @@ export default function PipelinePage() {
               )}
             </div>
           ) : (
-            <div ref={timelineScrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
-              <div className="inline-flex min-w-max border border-border rounded-xl overflow-hidden bg-muted/20">
+            <div ref={timelineScrollRef} className="flex-1 min-h-0 overflow-auto">
+              <div className="inline-block min-w-full border border-border rounded-xl bg-muted/20">
                 <table className="border-collapse table-fixed" style={{ tableLayout: 'fixed', width: 'max-content', minWidth: '100%' }}>
                   <colgroup>
-                    <col style={{ width: 64, minWidth: 64, maxWidth: 64 }} />
+                    <col style={{ width: 56, minWidth: 56 }} />
                     {timelineDateColumns.map(({ dateKey }) => (
                       <col key={dateKey} style={{ width: 180, minWidth: 180 }} />
                     ))}
                   </colgroup>
                   <thead>
                     <tr>
-                      <th style={{ width: 64, minWidth: 64, maxWidth: 64 }} className="sticky left-0 z-20 bg-muted/80 backdrop-blur-sm border-b border-r border-border px-0 py-2 text-center shadow-[2px_0_6px_-1px_rgba(0,0,0,0.08)]" aria-label={t('pipeline.timelineLanes')} />
+                      <th className="sticky left-0 z-20 w-[56px] min-w-[56px] bg-muted/80 border-b border-r border-border px-0 py-2 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" style={{ width: 56 }} aria-label={t('pipeline.timelineLanes')} />
                       {timelineDateColumns.map(({ dateKey, label }) => {
                         const isToday = label === t('pipeline.timelineToday');
                         return (
@@ -604,88 +624,85 @@ export default function PipelinePage() {
                     {filteredTimelineLanes.map(({ laneKey, laneLabel, leads: laneLeads }) => {
                       const initials = getLaneInitials(laneLabel, laneKey, t('pipeline.timelineLaneNoCreator'));
                       return (
-                      <tr key={laneKey} className="border-b border-border last:border-b-0 hover:bg-muted/20">
-                        <td style={{ width: 64, minWidth: 64, maxWidth: 64 }} className="sticky left-0 z-20 bg-card border-r border-border px-0 py-2 align-top shadow-[2px_0_6px_-1px_rgba(0,0,0,0.08)]">
-                          <div className="flex flex-col items-center gap-1 w-full overflow-hidden">
-                            <div
-                              className="w-10 h-10 rounded-full bg-primary/15 text-primary flex items-center justify-center text-sm font-semibold shrink-0 border border-border/50"
-                              title={laneLabel + (laneLeads.length ? ` (${laneLeads.length})` : '')}
-                            >
-                              {initials}
+                        <tr key={laneKey} className="border-b border-border last:border-b-0 hover:bg-muted/20">
+                          <td className="sticky left-0 z-20 w-[56px] min-w-[56px] bg-card border-r border-border px-0 py-2 align-top shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]" style={{ width: 56 }}>
+                            <div className="flex flex-col items-center gap-0.5 w-full" title={laneLabel + (laneLeads.length ? ` (${laneLeads.length})` : '')}>
+                              <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium shrink-0">
+                                {initials}
+                              </div>
+                              <span className="text-[10px] text-muted-foreground tabular-nums">{laneLeads.length}</span>
                             </div>
-                            <span className="text-[10px] text-muted-foreground tabular-nums">{laneLeads.length}</span>
-                          </div>
-                        </td>
-                        {timelineDateColumns.map(({ dateKey }) => {
-                          const dayLeads = getLeadsForLaneAndDate(laneKey, dateKey);
-                          return (
-                            <td key={dateKey} className="min-w-[180px] w-[180px] align-top p-2 bg-card/50">
-                              <ul className="space-y-2">
-                                {dayLeads.map((lead) => {
-                                  const stageColor = stages.find((s) => s.id === lead.stage_id)?.color;
-                                  const createdDate = new Date(lead.created_at);
-                                  const inFunnel = formatInFunnel(lead.created_at);
-                                  return (
-                                    <li key={lead.id}>
-                                      <div
-                                        className="flex items-start gap-1 bg-card rounded-lg p-2.5 border border-border border-l-4 shadow-sm hover:shadow-md hover:border-primary/30 transition-shadow min-w-0"
-                                        style={stageColor ? { borderLeftColor: stageColor } : undefined}
-                                      >
-                                        <Link
-                                          href={`/dashboard/messaging?contactId=${lead.contact_id}`}
-                                          className="flex-1 min-w-0"
+                          </td>
+                          {timelineDateColumns.map(({ dateKey }) => {
+                            const dayLeads = getLeadsForLaneAndDate(laneKey, dateKey);
+                            return (
+                              <td key={dateKey} className="min-w-[180px] w-[180px] align-top p-2 bg-card/50">
+                                <ul className="space-y-2">
+                                  {dayLeads.map((lead) => {
+                                    const stageColor = stages.find((s) => s.id === lead.stage_id)?.color;
+                                    const createdDate = new Date(lead.created_at);
+                                    const inFunnel = formatInFunnel(lead.created_at);
+                                    return (
+                                      <li key={lead.id}>
+                                        <div
+                                          className="flex items-start gap-1 bg-card rounded-lg p-2.5 border border-border border-l-4 shadow-sm hover:shadow-md hover:border-primary/30 transition-shadow min-w-0"
+                                          style={stageColor ? { borderLeftColor: stageColor } : undefined}
                                         >
-                                          <p className="font-medium text-foreground text-sm truncate">{leadContactName(lead)}</p>
-                                          <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground mt-1">
-                                            <span title={createdDate.toLocaleString(i18n.language || 'ru')}>
-                                              {createdDate.toLocaleDateString(i18n.language || 'ru', { day: 'numeric', month: 'short', year: 'numeric' })} {createdDate.toLocaleTimeString(i18n.language || 'ru', { hour: '2-digit', minute: '2-digit' })}
-                                            </span>
-                                            <span className={inFunnel.isLong ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined} title={t('pipeline.timelineDaysInFunnelHint')}>
-                                              {inFunnel.text}
-                                            </span>
-                                          </div>
-                                        </Link>
-                                        <div className="relative shrink-0">
-                                          <button
-                                            type="button"
-                                            onClick={(e) => { e.preventDefault(); setLeadMenuId(leadMenuId === lead.id ? null : lead.id); }}
-                                            className="p-1 rounded text-muted-foreground hover:bg-accent"
+                                          <Link
+                                            href={`/dashboard/messaging?contactId=${lead.contact_id}`}
+                                            className="flex-1 min-w-0"
                                           >
-                                            <MoreVertical className="w-4 h-4" />
-                                          </button>
-                                          {leadMenuId === lead.id && (
-                                            <>
-                                              <div className="fixed inset-0 z-10" aria-hidden onClick={() => setLeadMenuId(null)} />
-                                              <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-lg z-20 min-w-[200px]">
-                                                <button
-                                                  type="button"
-                                                  onClick={() => { setLeadCardModalLeadId(lead.id); setLeadMenuId(null); }}
-                                                  className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-accent flex items-center gap-2"
-                                                >
-                                                  <User className="w-3.5 h-3.5" />
-                                                  {t('messaging.openLeadCard', 'Открыть карточку лида')}
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  onClick={() => { handleRemoveLead(lead.id); setLeadMenuId(null); }}
-                                                  className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
-                                                >
-                                                  <Trash2 className="w-3.5 h-3.5" />
-                                                  {t('pipeline.removeFromFunnel')}
-                                                </button>
-                                              </div>
-                                            </>
-                                          )}
+                                            <p className="font-medium text-foreground text-sm truncate">{leadContactName(lead)}</p>
+                                            <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground mt-1">
+                                              <span title={createdDate.toLocaleString(i18n.language || 'ru')}>
+                                                {createdDate.toLocaleDateString(i18n.language || 'ru', { day: 'numeric', month: 'short', year: 'numeric' })} {createdDate.toLocaleTimeString(i18n.language || 'ru', { hour: '2-digit', minute: '2-digit' })}
+                                              </span>
+                                              <span className={inFunnel.isLong ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined} title={t('pipeline.timelineDaysInFunnelHint')}>
+                                                {inFunnel.text}
+                                              </span>
+                                            </div>
+                                          </Link>
+                                          <div className="relative shrink-0">
+                                            <button
+                                              type="button"
+                                              onClick={(e) => { e.preventDefault(); setLeadMenuId(leadMenuId === lead.id ? null : lead.id); }}
+                                              className="p-1 rounded text-muted-foreground hover:bg-accent"
+                                            >
+                                              <MoreVertical className="w-4 h-4" />
+                                            </button>
+                                            {leadMenuId === lead.id && (
+                                              <>
+                                                <div className="fixed inset-0 z-10" aria-hidden onClick={() => setLeadMenuId(null)} />
+                                                <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-lg z-20 min-w-[200px]">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => { setLeadCardModalLeadId(lead.id); setLeadMenuId(null); }}
+                                                    className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-accent flex items-center gap-2"
+                                                  >
+                                                    <User className="w-3.5 h-3.5" />
+                                                    {t('messaging.openLeadCard', 'Открыть карточку лида')}
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => { handleRemoveLead(lead.id); setLeadMenuId(null); }}
+                                                    className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/10 flex items-center gap-2"
+                                                  >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                    {t('pipeline.removeFromFunnel')}
+                                                  </button>
+                                                </div>
+                                              </>
+                                            )}
+                                          </div>
                                         </div>
-                                      </div>
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            </td>
-                          );
-                        })}
-                      </tr>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              </td>
+                            );
+                          })}
+                        </tr>
                       );
                     })}
                   </tbody>
@@ -847,6 +864,7 @@ export default function PipelinePage() {
         leadId={leadCardModalLeadId}
         open={leadCardModalLeadId != null}
         onClose={() => setLeadCardModalLeadId(null)}
+        onLeadUpdated={loadStagesAndLeads}
       />
     </div>
   );

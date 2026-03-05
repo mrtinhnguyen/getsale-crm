@@ -5,6 +5,7 @@ import { StringSession } from 'telegram/sessions';
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 import { RabbitMQClient, RedisClient } from '@getsale/utils';
+import { Logger } from '@getsale/logger';
 import {
   EventType,
   Event,
@@ -19,6 +20,21 @@ import {
 } from '@getsale/events';
 import { MessageChannel, MessageDirection, MessageStatus } from '@getsale/types';
 import { serializeMessage, getMessageText, SerializedTelegramMessage } from './telegram-serialize';
+import { Logger } from '@getsale/logger';
+
+function formatLogArgs(...args: unknown[]): string {
+  return args.map(a => {
+    if (a instanceof Error) return a.message;
+    if (typeof a === 'object' && a !== null) { try { return JSON.stringify(a); } catch { return String(a); } }
+    return String(a);
+  }).join(' ');
+}
+
+interface StructuredLog {
+  info(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+}
 
 /** Преобразует реакции из telegram_extra.reactions в наш JSONB { "👍": 2, "❤️": 1 }. */
 function reactionsFromTelegramExtra(telegram_extra: Record<string, unknown> | undefined): Record<string, number> | null {
@@ -86,6 +102,7 @@ export class TelegramManager {
   private clients: Map<string, TelegramClientInfo> = new Map();
   private pool: Pool;
   private rabbitmq: RabbitMQClient;
+  private log: StructuredLog;
   private reconnectIntervals: Map<string, NodeJS.Timeout> = new Map();
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
   private readonly RECONNECT_DELAY = 5000; // 5 seconds
@@ -121,10 +138,16 @@ export class TelegramManager {
   private static readonly QR_REDIS_TTL = 300; // 5 min
   private static readonly QR_PASSWORD_TTL = 120; // 2 min for password submit
 
-  constructor(pool: Pool, rabbitmq: RabbitMQClient, redis?: RedisClient | null) {
+  constructor(pool: Pool, rabbitmq: RabbitMQClient, redis?: RedisClient | null, logger?: Logger) {
     this.pool = pool;
     this.rabbitmq = rabbitmq;
     this.redis = redis ?? null;
+    const svcLog: Logger = logger ?? { info() {}, warn() {}, error() {} } as Logger;
+    this.log = {
+      info: (...args: unknown[]) => svcLog.info({ message: formatLogArgs(...args) }),
+      error: (...args: unknown[]) => svcLog.error({ message: formatLogArgs(...args) }),
+      warn: (...args: unknown[]) => svcLog.warn({ message: formatLogArgs(...args) }),
+    };
     this.startCleanupInterval();
     this.startSessionSaveInterval();
   }
@@ -157,13 +180,13 @@ export class TelegramManager {
       // Connect client with proper error handling for datacenter migration
       try {
         await client.connect();
-        console.log(`[TelegramManager] Connected client for sending code to ${phoneNumber}`);
+        this.log.info({ message: `Connected client for sending code to ${phoneNumber}` });
         
         // Wait a bit for connection to stabilize and avoid builder.resolve errors
         await new Promise(resolve => setTimeout(resolve, 2000));
       } catch (error: any) {
         // If connection fails, clean up and rethrow
-        console.error(`[TelegramManager] Connection error for ${phoneNumber}:`, error.message);
+        this.log.error({ message: `Connection error for ${phoneNumber}`, error: error.message });
         throw error;
       }
 
@@ -195,7 +218,7 @@ export class TelegramManager {
 
       return { phoneCodeHash };
     } catch (error: any) {
-      console.error(`[TelegramManager] Error sending code for account ${accountId}:`, error);
+      this.log.error({ message: `Error sending code for account ${accountId}`, error: error?.message || String(error) });
       await this.updateAccountStatus(accountId, 'error', error.message || 'Failed to send code');
       throw error;
     }
@@ -278,7 +301,7 @@ export class TelegramManager {
 
       return { requiresPassword: false };
     } catch (error: any) {
-      console.error(`[TelegramManager] Error signing in account ${accountId}:`, error);
+      this.log.error({ message: `Error signing in account ${accountId}`, error: error?.message || String(error) });
       await this.updateAccountStatus(accountId, 'error', error.message || 'Sign in failed');
       throw error;
     }
@@ -336,7 +359,7 @@ export class TelegramManager {
       await this.saveAccountProfile(accountId, client);
       await this.updateAccountStatus(accountId, 'connected', 'Successfully signed in with password');
     } catch (error: any) {
-      console.error(`[TelegramManager] Error signing in with password for account ${accountId}:`, error);
+      this.log.error({ message: `Error signing in with password for account ${accountId}`, error: error?.message || String(error) });
       await this.updateAccountStatus(accountId, 'error', error.message || 'Password sign in failed');
       throw error;
     }
@@ -423,7 +446,7 @@ export class TelegramManager {
             },
             onError: async (err: Error) => {
               const msg = err?.message || String(err);
-              console.error('[TelegramManager] QR login onError:', msg, err);
+              this.log.error({ message: 'QR login onError', error: msg });
               const state = this.qrSessions.get(sessionId);
               if (state) {
                 state.status = 'error';
@@ -518,7 +541,7 @@ export class TelegramManager {
         } as Event);
       } catch (err: any) {
         const msg = err?.message || String(err);
-        console.error('[TelegramManager] QR login failed:', msg, err?.stack);
+        this.log.error({ message: 'QR login failed', error: msg, stack: err?.stack });
         const state = this.qrSessions.get(sessionId);
         if (state) {
           state.status = 'error';
@@ -554,7 +577,7 @@ export class TelegramManager {
       passwordHint: full.passwordHint,
     };
     this.redis.set(TelegramManager.QR_REDIS_PREFIX + sessionId, payload, TelegramManager.QR_REDIS_TTL).catch((err) => {
-      console.error('[TelegramManager] Failed to persist QR state to Redis:', err);
+      this.log.error({ message: "Failed to persist QR state to Redis", error: String(err) });
     });
   }
 
@@ -648,7 +671,7 @@ export class TelegramManager {
 
       // Connect client first
       await client.connect();
-      console.log(`[TelegramManager] Connected account ${accountId} (${phoneNumber})`);
+      this.log.info({ message: `Connected account ${accountId} (${phoneNumber})` });
 
       // Wait for connection to stabilize before setting up handlers
       // This helps avoid builder.resolve errors during initialization
@@ -657,23 +680,23 @@ export class TelegramManager {
       // Verify session is valid by checking if we're authorized
       try {
         await client.getMe();
-        console.log(`[TelegramManager] Session verified for account ${accountId}`);
+        this.log.info({ message: `Session verified for account ${accountId}` });
       } catch (error: any) {
-        console.error(`[TelegramManager] Session invalid for account ${accountId}:`, error.message);
+        this.log.error({ message: `Session invalid for account ${accountId}`, error: error.message });
         await client.disconnect();
         throw new Error('Invalid session. Please reconnect the account.');
       }
 
       // Set up event handlers AFTER verifying session is valid and connection is stable
       this.setupEventHandlers(client, accountId, organizationId);
-      console.log(`[TelegramManager] Event handlers registered for account ${accountId}`);
+      this.log.info({ message: `Event handlers registered for account ${accountId}` });
 
       // Best practice: high-level request after handlers so Telegram pushes updates to this client
       try {
         await client.getMe();
-        console.log(`[TelegramManager] getMe() after handlers — update stream active for account ${accountId}`);
+        this.log.info({ message: `getMe() after handlers — update stream active for account ${accountId}` });
       } catch (e: any) {
-        console.warn(`[TelegramManager] getMe() after handlers failed (non-fatal):`, e?.message);
+        this.log.warn({ message: `getMe() after handlers failed (non-fatal)`, error: e?.message });
       }
 
       // Save session immediately after connection
@@ -703,7 +726,7 @@ export class TelegramManager {
 
       return client;
     } catch (error: any) {
-      console.error(`[TelegramManager] Error connecting account ${accountId}:`, error);
+      this.log.error({ message: `Error connecting account ${accountId}`, error: error?.message || String(error) });
       await this.updateAccountStatus(accountId, 'error', error.message || 'Connection failed');
       throw error;
     }
@@ -721,7 +744,7 @@ export class TelegramManager {
         await client.invoke(new Api.updates.GetState());
       } catch (e: any) {
         if (e?.message !== 'TIMEOUT' && !e?.message?.includes('builder.resolve')) {
-          console.warn(`[TelegramManager] GetState keepalive failed for ${accountId}:`, e?.message);
+          this.log.warn({ message: `GetState keepalive failed for ${accountId}`, error: e?.message });
         }
       }
     }, this.UPDATE_KEEPALIVE_MS);
@@ -748,7 +771,7 @@ export class TelegramManager {
     try {
       // Check if client is ready before setting up handlers
       if (!client.connected) {
-        console.warn(`[TelegramManager] Client not connected for account ${accountId}, skipping event handlers`);
+        this.log.warn({ message: `Client not connected for account ${accountId}, skipping event handlers` });
         return;
       }
 
@@ -759,7 +782,7 @@ export class TelegramManager {
             const hasMessage = update?.message != null;
             if (!hasMessage) return;
             const name = update?.className ?? update?.constructor?.name ?? (update && typeof update === 'object' ? 'Object' : String(update));
-            console.log(`[TelegramManager] Raw update: ${name}, accountId=${accountId}`);
+            this.log.info({ message: `Raw update: ${name}, accountId=${accountId}` });
           },
           new Raw({ func: () => true })
         );
@@ -775,7 +798,7 @@ export class TelegramManager {
             } catch (err: any) {
               if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
               if (err?.message?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] Short message handler error for ${accountId}:`, err?.message || err);
+              this.log.error({ message: `Short message handler error for ${accountId}`, error: err?.message || String(err) });
             }
           },
           new Raw({
@@ -801,7 +824,7 @@ export class TelegramManager {
         client.addEventHandler(
           async (event: any) => {
             try {
-              console.log(`[TelegramManager] Raw UpdateNewMessage/UpdateNewChannelMessage, accountId=${accountId}, hasMessage=${!!event?.message}`);
+              this.log.info({ message: `Raw UpdateNewMessage/UpdateNewChannelMessage, accountId=${accountId}, hasMessage=${!!event?.message}` });
               if (!client.connected) return;
 
               const accountCheck = await this.pool.query(
@@ -809,7 +832,7 @@ export class TelegramManager {
                 [accountId]
               );
               if (accountCheck.rows.length === 0 || !accountCheck.rows[0].is_active) {
-                console.log(`[TelegramManager] Account ${accountId} no longer exists or is inactive, disconnecting...`);
+                this.log.info({ message: `Account ${accountId} no longer exists or is inactive, disconnecting...` });
                 await this.disconnectAccount(accountId);
                 return;
               }
@@ -821,11 +844,11 @@ export class TelegramManager {
               }
             } catch (error: any) {
               if (error.message === 'TIMEOUT' || error.message?.includes('TIMEOUT')) {
-                console.warn(`[TelegramManager] Timeout error for account ${accountId}, will retry:`, error.message);
+                this.log.warn({ message: `Timeout error for account ${accountId}, will retry`, error: error.message });
                 return;
               }
               if (error.message?.includes('builder.resolve') || error.stack?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] Error handling new message for account ${accountId}:`, error);
+              this.log.error({ message: `Error handling new message for account ${accountId}`, error: error?.message || String(error) });
             }
           },
           new Raw({
@@ -835,7 +858,7 @@ export class TelegramManager {
         );
       } catch (error: any) {
         if (error.message?.includes('builder.resolve') || error.stack?.includes('builder.resolve')) {
-          console.warn(`[TelegramManager] Could not set up UpdateNewMessage handler for ${accountId}, will rely on Short/NewMessage`);
+          this.log.warn({ message: `Could not set up UpdateNewMessage handler for ${accountId}, will rely on Short/NewMessage` });
         } else {
           throw error;
         }
@@ -859,15 +882,15 @@ export class TelegramManager {
             } catch (err: any) {
               if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
               if (err?.message?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] NewMessage(incoming) handler error for ${accountId}:`, err?.message || err);
+              this.log.error({ message: `NewMessage(incoming) handler error for ${accountId}`, error: err?.message || String(err) });
             }
           },
           new NewMessage({ incoming: true })
         );
-        console.log(`[TelegramManager] NewMessage(incoming) handler registered for account ${accountId}`);
+        this.log.info({ message: `NewMessage(incoming) handler registered for account ${accountId}` });
       } catch (err: any) {
         if (err?.message?.includes('builder.resolve') || err?.stack?.includes('builder.resolve')) {
-          console.warn(`[TelegramManager] Could not set up NewMessage(incoming) handler for ${accountId}`);
+          this.log.warn({ message: `Could not set up NewMessage(incoming) handler for ${accountId}` });
         }
       }
 
@@ -889,15 +912,15 @@ export class TelegramManager {
             } catch (err: any) {
               if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
               if (err?.message?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] NewMessage(outgoing) handler error for ${accountId}:`, err?.message || err);
+              this.log.error({ message: `NewMessage(outgoing) handler error for ${accountId}`, error: err?.message || String(err) });
             }
           },
           new NewMessage({ incoming: false })
         );
-        console.log(`[TelegramManager] NewMessage(outgoing) handler registered for account ${accountId}`);
+        this.log.info({ message: `NewMessage(outgoing) handler registered for account ${accountId}` });
       } catch (err: any) {
         if (err?.message?.includes('builder.resolve') || err?.stack?.includes('builder.resolve')) {
-          console.warn(`[TelegramManager] Could not set up NewMessage(outgoing) handler for ${accountId}`);
+          this.log.warn({ message: `Could not set up NewMessage(outgoing) handler for ${accountId}` });
         }
       }
 
@@ -926,7 +949,7 @@ export class TelegramManager {
               }
             } catch (err: any) {
               if (err?.message?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] UpdateDeleteMessages handler error for ${accountId}:`, err?.message);
+              this.log.error({ message: `UpdateDeleteMessages handler error for ${accountId}`, error: err?.message });
             }
           },
           new Raw({
@@ -936,7 +959,7 @@ export class TelegramManager {
         );
       } catch (err: any) {
         if (err?.message?.includes('builder.resolve')) {
-          console.warn(`[TelegramManager] Could not set up UpdateDeleteMessages for ${accountId}`);
+          this.log.warn({ message: `Could not set up UpdateDeleteMessages for ${accountId}` });
         }
       }
 
@@ -969,7 +992,7 @@ export class TelegramManager {
                 }
               } catch (err: any) {
                 if (err?.message?.includes('builder.resolve')) return;
-                console.error(`[TelegramManager] UpdateDeleteChannelMessages handler error for ${accountId}:`, err?.message);
+                this.log.error({ message: `UpdateDeleteChannelMessages handler error for ${accountId}`, error: err?.message });
               }
             },
             new Raw({
@@ -1023,26 +1046,26 @@ export class TelegramManager {
               }
             } catch (err: any) {
               if (err?.message?.includes('builder.resolve')) return;
-              console.error(`[TelegramManager] EditedMessage handler error for ${accountId}:`, err?.message);
+              this.log.error({ message: `EditedMessage handler error for ${accountId}`, error: err?.message });
             }
           },
           new EditedMessage({})
         );
       } catch (err: any) {
-        console.warn(`[TelegramManager] Could not set up EditedMessage for ${accountId}:`, err?.message);
+        this.log.warn({ message: `Could not set up EditedMessage for ${accountId}`, error: err?.message });
       }
 
       // Telegram presence/UI updates: typing, user status, read receipt, draft — только для чатов из sync list, публикуем в RabbitMQ → WebSocket.
       this.setupTelegramPresenceHandlers(client, accountId, organizationId).catch((err) =>
-        console.warn('[TelegramManager] setupTelegramPresenceHandlers failed:', err?.message)
+        this.log.warn({ message: "setupTelegramPresenceHandlers failed", error: err?.message })
       );
       this.setupTelegramOtherHandlers(client, accountId, organizationId).catch((err) =>
-        console.warn('[TelegramManager] setupTelegramOtherHandlers failed:', err?.message)
+        this.log.warn({ message: "setupTelegramOtherHandlers failed", error: err?.message })
       );
 
       // Reconnection and account cleanup are handled in scheduleReconnect, cleanupInactiveClients, and on TIMEOUT.
     } catch (error: any) {
-      console.error(`[TelegramManager] Error setting up event handlers:`, error.message);
+      this.log.error({ message: `Error setting up event handlers`, error: error.message });
       // Don't throw - allow client to continue without event handlers
     }
   }
@@ -1869,7 +1892,7 @@ export class TelegramManager {
         }
       } catch (e: any) {
         if (e?.message !== 'TIMEOUT' && !e?.message?.includes('Could not find')) {
-          console.warn('[TelegramManager] getEntity for contact enrichment:', e?.message);
+          this.log.warn({ message: "getEntity for contact enrichment", error: e?.message });
         }
       }
     }
@@ -1950,7 +1973,7 @@ export class TelegramManager {
       const msgId = (update as any).id;
       const text = (update as any).message;
       const date = (update as any).date;
-      console.log(`[TelegramManager] Short message ${isOut ? 'outgoing' : 'incoming'}: ${name}, accountId=${accountId}, chatId=${chatIdRaw ?? userId}`);
+      this.log.info({ message: `Short message ${isOut ? 'outgoing' : 'incoming'}: ${name}, accountId=${accountId}, chatId=${chatIdRaw ?? userId}` });
       if (typeof text !== 'string' || !text.trim()) return;
 
       const chatId = name === 'UpdateShortChatMessage'
@@ -1965,7 +1988,7 @@ export class TelegramManager {
       // Только чаты, которые пользователь выбрал при синхронизации (bd_account_sync_chats). Не авто-добавляем при приходе сообщения.
       const allowed = await this.isChatAllowedForAccount(accountId, chatId);
       if (!allowed) {
-        console.log(`[TelegramManager] Short: chat not in sync list (user did not select during sync), skipping, accountId=${accountId}, chatId=${chatId}`);
+        this.log.info({ message: `Short: chat not in sync list (user did not select during sync), skipping, accountId=${accountId}, chatId=${chatId}` });
         return;
       }
 
@@ -2021,9 +2044,9 @@ export class TelegramManager {
         },
       };
       await this.rabbitmq.publishEvent(event);
-      console.log(`[TelegramManager] Short message saved and event published, messageId=${savedMessage.id}, channelId=${chatId}`);
+      this.log.info({ message: `Short message saved and event published, messageId=${savedMessage.id}, channelId=${chatId}` });
     } catch (error) {
-      console.error(`[TelegramManager] Error handling short message:`, error);
+      this.log.error({ message: `Error handling short message`, error: error?.message || String(error) });
     }
   }
 
@@ -2045,7 +2068,7 @@ export class TelegramManager {
         else if (message.peerId instanceof Api.PeerChannel) chatId = String(message.peerId.channelId);
         else chatId = String(message.peerId);
       }
-      console.log(`[TelegramManager] New message ${isOut ? 'outgoing' : 'incoming'}`, { accountId, chatId });
+      this.log.info({ message: `New message ${isOut ? 'outgoing' : 'incoming'}`, error: { accountId, chatId } });
       const text = getMessageText(message);
       if (!text.trim() && !message.media) {
         return; // Skip empty messages
@@ -2063,7 +2086,7 @@ export class TelegramManager {
       // Только чаты, которые пользователь выбрал при синхронизации (bd_account_sync_chats). Не авто-добавляем чаты при приходе сообщения — иначе прилетали бы уведомления по всем чатам.
       const allowed = await this.isChatAllowedForAccount(accountId, chatId);
       if (!allowed) {
-        console.log(`[TelegramManager] Chat not in sync list (user did not select this chat during sync), skipping message, accountId=${accountId}, chatId=${chatId}`);
+        this.log.info({ message: `Chat not in sync list (user did not select this chat during sync), skipping message, accountId=${accountId}, chatId=${chatId}` });
         return;
       }
 
@@ -2085,7 +2108,7 @@ export class TelegramManager {
             }
           } catch (e: any) {
             if (e?.message !== 'TIMEOUT' && !e?.message?.includes('Could not find')) {
-              console.warn('[TelegramManager] getEntity for contact enrichment:', e?.message);
+              this.log.warn({ message: "getEntity for contact enrichment", error: e?.message });
             }
           }
         }
@@ -2141,9 +2164,9 @@ export class TelegramManager {
         },
       };
       await this.rabbitmq.publishEvent(event);
-      console.log(`[TelegramManager] MessageReceivedEvent published, messageId=${savedMessage.id}, channelId=${chatId}`);
+      this.log.info({ message: `MessageReceivedEvent published, messageId=${savedMessage.id}, channelId=${chatId}` });
     } catch (error) {
-      console.error(`[TelegramManager] Error handling new message:`, error);
+      this.log.error({ message: `Error handling new message`, error: error?.message || String(error) });
     }
   }
 
@@ -2194,7 +2217,7 @@ export class TelegramManager {
       data: { bdAccountId: accountId, totalChats },
     };
     await this.rabbitmq.publishEvent(startedEvent);
-    console.log(`[TelegramManager] Sync started for account ${accountId}, ${totalChats} chats`);
+    this.log.info({ message: `Sync started for account ${accountId}, ${totalChats} chats` });
 
     let totalMessages = 0;
     let failedChatsCount = 0;
@@ -2204,7 +2227,7 @@ export class TelegramManager {
       const { telegram_chat_id: telegramChatId, title } = chats[i];
       let fetched = 0;
       const chatNum = i + 1;
-      console.log(`[TelegramManager] Processing chat ${chatNum}/${totalChats}: ${title} (id=${telegramChatId})`);
+      this.log.info({ message: `Processing chat ${chatNum}/${totalChats}: ${title} (id=${telegramChatId})` });
 
       try {
         // GramJS getInputEntity: numeric IDs (incl. -100xxx for channels) must be number; usernames stay string
@@ -2280,7 +2303,7 @@ export class TelegramManager {
         }
       } catch (err: any) {
         failedChatsCount++;
-        console.error(`[TelegramManager] Sync error for chat ${chatNum}/${totalChats} (${title}, id=${telegramChatId}):`, err?.message || err);
+        this.log.error({ message: `Sync error for chat ${chatNum}/${totalChats} (${title}, id=${telegramChatId})`, error: err?.message || String(err) });
         // Не прерываем весь sync: обновляем прогресс и продолжаем со следующим чатом
         const done = i + 1;
         await this.pool.query(
@@ -2314,7 +2337,7 @@ export class TelegramManager {
       };
       await this.rabbitmq.publishEvent(progressEvent);
       onProgress?.(done, totalChats, telegramChatId, title);
-      console.log(`[TelegramManager] Chat ${done}/${totalChats} done: ${title}, messages: ${fetched}`);
+      this.log.info({ message: `Chat ${done}/${totalChats} done: ${title}, messages: ${fetched}` });
       await sleep(this.SYNC_DELAY_MS);
     }
 
@@ -2330,7 +2353,7 @@ export class TelegramManager {
       data: { bdAccountId: accountId, totalChats, totalMessages, failedChats: failedChatsCount },
     };
     await this.rabbitmq.publishEvent(completedEvent);
-    console.log(`[TelegramManager] Sync completed for account ${accountId}: ${totalChats} chats, ${totalMessages} messages, ${failedChatsCount} chats failed`);
+    this.log.info({ message: `Sync completed for account ${accountId}: ${totalChats} chats, ${totalMessages} messages, ${failedChatsCount} chats failed` });
     return { totalChats, totalMessages };
   }
 
@@ -2394,11 +2417,11 @@ export class TelegramManager {
         }
         if (count >= maxDialogs) break;
       }
-      console.log(`[TelegramManager] getDialogsAll folder=${folderId} fetched ${result.length} dialogs`);
+      this.log.info({ message: `getDialogsAll folder=${folderId} fetched ${result.length} dialogs` });
       return result;
     } catch (error: any) {
       if (error?.message === 'TIMEOUT' || error?.message?.includes('TIMEOUT')) throw error;
-      console.error(`[TelegramManager] Error getDialogsAll for ${accountId} folder ${folderId}:`, error?.message || error);
+      this.log.error({ message: `Error getDialogsAll for ${accountId} folder ${folderId}`, error: error?.message || String(error) });
       throw error;
     }
   }
@@ -2422,7 +2445,7 @@ export class TelegramManager {
       const mapped = dialogs.map((dialog: any) => TelegramManager.mapDialogToItem(dialog));
       return mapped.filter((d: any) => d.isUser || d.isGroup);
     } catch (error) {
-      console.error(`[TelegramManager] Error getting dialogs for ${accountId}:`, error);
+      this.log.error({ message: `Error getting dialogs for ${accountId}`, error: error?.message || String(error) });
       throw error;
     }
   }
@@ -2599,7 +2622,7 @@ export class TelegramManager {
       }
       return list;
     } catch (error: any) {
-      console.error(`[TelegramManager] Error getting dialog filters for ${accountId}:`, error?.message || error);
+      this.log.error({ message: `Error getting dialog filters for ${accountId}`, error: error?.message || String(error) });
       throw error;
     }
   }
@@ -2786,7 +2809,7 @@ export class TelegramManager {
       }
     } catch (err: any) {
       if (err?.message !== 'TIMEOUT' && !err?.message?.includes('builder.resolve')) {
-        console.warn(`[TelegramManager] tryAddChatFromSelectedFolders getEntity ${chatId}:`, err?.message);
+        this.log.warn({ message: `tryAddChatFromSelectedFolders getEntity ${chatId}`, error: err?.message });
       }
       return false;
     }
@@ -2811,7 +2834,7 @@ export class TelegramManager {
        VALUES ($1, $2, $3) ON CONFLICT (bd_account_id, telegram_chat_id, folder_id) DO NOTHING`,
       [accountId, chatId, folderId]
     );
-    console.log(`[TelegramManager] Auto-added chat ${chatId} (${title}) for account ${accountId} via getEntity`);
+    this.log.info({ message: `Auto-added chat ${chatId} (${title}) for account ${accountId} via getEntity` });
     return true;
   }
 
@@ -2863,7 +2886,7 @@ export class TelegramManager {
           inputUsers.push(new Api.InputUser({ userId: u.id, accessHash: u.accessHash ?? BigInt(0) }));
         }
       } catch (e: any) {
-        console.warn('[TelegramManager] createSharedChat: could not resolve lead user', leadTelegramUserId, e?.message);
+        this.log.warn('[TelegramManager] createSharedChat: could not resolve lead user', leadTelegramUserId, e?.message);
       }
     }
     for (const username of extraUsernames) {
@@ -2876,7 +2899,7 @@ export class TelegramManager {
           inputUsers.push(new Api.InputUser({ userId: user.id, accessHash: user.accessHash ?? BigInt(0) }));
         }
       } catch (e: any) {
-        console.warn('[TelegramManager] createSharedChat: could not resolve username', u, e?.message);
+        this.log.warn('[TelegramManager] createSharedChat: could not resolve username', u, e?.message);
       }
     }
 
@@ -2900,7 +2923,7 @@ export class TelegramManager {
         inviteLink = exported.link.trim();
       }
     } catch (e: any) {
-      console.warn('[TelegramManager] createSharedChat: could not export invite link', e?.message);
+      this.log.warn({ message: "createSharedChat: could not export invite link", error: e?.message });
     }
 
     return { channelId: String(channelId), title, inviteLink };
@@ -2998,10 +3021,10 @@ export class TelegramManager {
         await sleep(this.SYNC_DELAY_MS);
       }
       if (fetched > 0) {
-        console.log(`[TelegramManager] syncHistoryForChat: ${fetched} messages for chat ${chatId}, account ${accountId}`);
+        this.log.info({ message: `syncHistoryForChat: ${fetched} messages for chat ${chatId}, account ${accountId}` });
       }
     } catch (err: any) {
-      console.warn(`[TelegramManager] syncHistoryForChat failed for ${accountId}/${chatId}:`, err?.message);
+      this.log.warn({ message: `syncHistoryForChat failed for ${accountId}/${chatId}`, error: err?.message });
     }
     return { messagesCount: fetched };
   }
@@ -3134,11 +3157,11 @@ export class TelegramManager {
       }
 
       if (added > 0) {
-        console.log(`[TelegramManager] fetchOlderMessagesFromTelegram: +${added} for chat ${chatId}, account ${accountId}, exhausted=${exhausted}`);
+        this.log.info({ message: `fetchOlderMessagesFromTelegram: +${added} for chat ${chatId}, account ${accountId}, exhausted=${exhausted}` });
       }
       return { added, exhausted };
     } catch (err: any) {
-      console.warn(`[TelegramManager] fetchOlderMessagesFromTelegram failed for ${accountId}/${chatId}:`, err?.message);
+      this.log.warn({ message: `fetchOlderMessagesFromTelegram failed for ${accountId}/${chatId}`, error: err?.message });
       throw err;
     }
   }
@@ -3211,7 +3234,7 @@ export class TelegramManager {
 
       return message;
     } catch (error) {
-      console.error(`[TelegramManager] Error sending message:`, error);
+      this.log.error({ message: `Error sending message`, error: error?.message || String(error) });
       throw error;
     }
   }
@@ -3276,7 +3299,7 @@ export class TelegramManager {
       );
       return message;
     } catch (error) {
-      console.error(`[TelegramManager] Error sending file:`, error);
+      this.log.error({ message: `Error sending file`, error: error?.message || String(error) });
       throw error;
     }
   }
@@ -3382,7 +3405,7 @@ export class TelegramManager {
       try {
         await clientInfo.client.disconnect();
       } catch (error) {
-        console.error(`[TelegramManager] Error disconnecting account ${accountId}:`, error);
+        this.log.error({ message: `Error disconnecting account ${accountId}`, error: error?.message || String(error) });
       }
       this.clients.delete(accountId);
       this.dialogFiltersCache.delete(accountId);
@@ -3403,7 +3426,7 @@ export class TelegramManager {
     if (!clientInfo) return;
 
     if (clientInfo.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[TelegramManager] Max reconnect attempts reached for ${accountId}`);
+      this.log.error({ message: `Max reconnect attempts reached for ${accountId}` });
       this.updateAccountStatus(accountId, 'error', 'Max reconnect attempts reached');
       return;
     }
@@ -3418,7 +3441,7 @@ export class TelegramManager {
     const interval = setTimeout(async () => {
       try {
         clientInfo.reconnectAttempts++;
-        console.log(`[TelegramManager] Attempting to reconnect account ${accountId} (attempt ${clientInfo.reconnectAttempts})`);
+        this.log.info({ message: `Attempting to reconnect account ${accountId} (attempt ${clientInfo.reconnectAttempts})` });
         
         // Get account details from DB
         const result = await this.pool.query(
@@ -3445,7 +3468,7 @@ export class TelegramManager {
         clientInfo.reconnectAttempts = 0;
         this.reconnectIntervals.delete(accountId);
       } catch (error) {
-        console.error(`[TelegramManager] Reconnection failed for ${accountId}:`, error);
+        this.log.error({ message: `Reconnection failed for ${accountId}`, error: error?.message || String(error) });
         // Schedule next attempt
         this.scheduleReconnect(accountId);
       }
@@ -3469,7 +3492,7 @@ export class TelegramManager {
         [accountId, status, message || '']
       );
     } catch (error) {
-      console.error(`[TelegramManager] Error updating account status:`, error);
+      this.log.error({ message: `Error updating account status`, error: error?.message || String(error) });
     }
   }
 
@@ -3497,10 +3520,10 @@ export class TelegramManager {
     this.reconnectAllTimeout = setTimeout(() => {
       this.reconnectAllTimeout = null;
       this.reconnectAllClientsAfterTimeout().catch((err) => {
-        console.error('[TelegramManager] reconnectAllClientsAfterTimeout failed:', err);
+        this.log.error({ message: "reconnectAllClientsAfterTimeout failed", error: String(err) });
       });
     }, this.RECONNECT_ALL_DEBOUNCE_MS);
-    console.log('[TelegramManager] TIMEOUT from update loop — scheduled reconnect of all clients in', this.RECONNECT_ALL_DEBOUNCE_MS / 1000, 's');
+    this.log.info('[TelegramManager] TIMEOUT from update loop — scheduled reconnect of all clients in', this.RECONNECT_ALL_DEBOUNCE_MS / 1000, 's');
   }
 
   /**
@@ -3509,7 +3532,7 @@ export class TelegramManager {
   private async reconnectAllClientsAfterTimeout(): Promise<void> {
     const accountIds = Array.from(this.clients.keys());
     if (accountIds.length === 0) return;
-    console.log('[TelegramManager] Reconnecting', accountIds.length, 'client(s) to restart update loops');
+    this.log.info('[TelegramManager] Reconnecting', accountIds.length, 'client(s) to restart update loops');
     for (const accountId of accountIds) {
       const info = this.clients.get(accountId);
       if (!info) continue;
@@ -3531,7 +3554,7 @@ export class TelegramManager {
           acc.session_string
         );
       } catch (err: any) {
-        console.error('[TelegramManager] Reconnect failed for account', accountId, err?.message || err);
+        this.log.error('[TelegramManager] Reconnect failed for account', accountId, err?.message || err);
       }
     }
   }
@@ -3562,11 +3585,11 @@ export class TelegramManager {
             account.session_string
           );
         } catch (error) {
-          console.error(`[TelegramManager] Failed to initialize account ${account.id}:`, error);
+          this.log.error({ message: `Failed to initialize account ${account.id}`, error: error?.message || String(error) });
         }
       }
     } catch (error) {
-      console.error('[TelegramManager] Error initializing active accounts:', error);
+      this.log.error({ message: "Error initializing active accounts", error: String(error) });
     }
   }
 
@@ -3578,7 +3601,7 @@ export class TelegramManager {
       try {
         await this.cleanupInactiveClients();
       } catch (error) {
-        console.error('[TelegramManager] Error during cleanup:', error);
+        this.log.error({ message: "Error during cleanup", error: String(error) });
       }
     }, this.CLEANUP_INTERVAL);
   }
@@ -3605,12 +3628,12 @@ export class TelegramManager {
       // Disconnect clients for accounts that are no longer active
       for (const accountId of accountIds) {
         if (!activeAccountIds.has(accountId)) {
-          console.log(`[TelegramManager] Cleaning up inactive client for account ${accountId}`);
+          this.log.info({ message: `Cleaning up inactive client for account ${accountId}` });
           await this.disconnectAccount(accountId);
         }
       }
     } catch (error) {
-      console.error('[TelegramManager] Error checking active accounts:', error);
+      this.log.error({ message: "Error checking active accounts", error: String(error) });
     }
   }
 
@@ -3625,7 +3648,7 @@ export class TelegramManager {
         [sessionString, accountId]
       );
     } catch (error) {
-      console.error(`[TelegramManager] Error saving session for account ${accountId}:`, error);
+      this.log.error({ message: `Error saving session for account ${accountId}`, error: error?.message || String(error) });
     }
   }
 
@@ -3658,7 +3681,7 @@ export class TelegramManager {
           photoFileId = String((profilePhoto as any).id);
         }
       } catch (e: any) {
-        console.warn(`[TelegramManager] GetFullUser for ${accountId} failed (non-fatal):`, e?.message);
+        this.log.warn({ message: `GetFullUser for ${accountId} failed (non-fatal)`, error: e?.message });
       }
 
       if (!photoFileId) {
@@ -3677,7 +3700,7 @@ export class TelegramManager {
             photoFileId = String((photo as any).id);
           }
         } catch (e: any) {
-          console.warn(`[TelegramManager] GetUserPhotos for ${accountId} failed (non-fatal):`, e?.message);
+          this.log.warn({ message: `GetUserPhotos for ${accountId} failed (non-fatal)`, error: e?.message });
         }
       }
 
@@ -3689,9 +3712,9 @@ export class TelegramManager {
          WHERE id = $8`,
         [telegramId, phoneNumber, firstName, lastName, username, bio, photoFileId, accountId]
       );
-      console.log(`[TelegramManager] Profile saved for account ${accountId}`);
+      this.log.info({ message: `Profile saved for account ${accountId}` });
     } catch (error: any) {
-      console.error(`[TelegramManager] Error saving profile for account ${accountId}:`, error);
+      this.log.error({ message: `Error saving profile for account ${accountId}`, error: error?.message || String(error) });
     }
   }
 
@@ -3708,7 +3731,7 @@ export class TelegramManager {
       if (!buffer || !(buffer instanceof Buffer)) return null;
       return { buffer, mimeType: 'image/jpeg' };
     } catch (e: any) {
-      console.warn(`[TelegramManager] downloadProfilePhoto for ${accountId}:`, e?.message);
+      this.log.warn({ message: `downloadProfilePhoto for ${accountId}`, error: e?.message });
       return null;
     }
   }
@@ -3729,7 +3752,7 @@ export class TelegramManager {
       if (!buffer || !(buffer instanceof Buffer)) return null;
       return { buffer, mimeType: 'image/jpeg' };
     } catch (e: any) {
-      console.warn(`[TelegramManager] downloadChatProfilePhoto ${accountId}/${chatId}:`, e?.message);
+      this.log.warn({ message: `downloadChatProfilePhoto ${accountId}/${chatId}`, error: e?.message });
       return null;
     }
   }
@@ -3742,7 +3765,7 @@ export class TelegramManager {
       try {
         await this.saveAllSessions();
       } catch (error) {
-        console.error('[TelegramManager] Error during session save:', error);
+        this.log.error({ message: "Error during session save", error: String(error) });
       }
     }, this.SESSION_SAVE_INTERVAL);
   }
@@ -3758,7 +3781,7 @@ export class TelegramManager {
           // Update last activity
           clientInfo.lastActivity = new Date();
         } catch (error) {
-          console.error(`[TelegramManager] Error saving session for account ${accountId}:`, error);
+          this.log.error({ message: `Error saving session for account ${accountId}`, error: error?.message || String(error) });
         }
       }
     }

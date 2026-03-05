@@ -2,6 +2,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
@@ -31,3 +34,30 @@ scrape_configs:
     static_configs:
       - targets: ['ai-service:3005']
 
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['user-service:3006']
+
+  - job_name: 'bd-accounts-service'
+    static_configs:
+      - targets: ['bd-accounts-service:3007']
+
+  - job_name: 'pipeline-service'
+    static_configs:
+      - targets: ['pipeline-service:3008']
+
+  - job_name: 'automation-service'
+    static_configs:
+      - targets: ['automation-service:3009']
+
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:3010']
+
+  - job_name: 'team-service'
+    static_configs:
+      - targets: ['team-service:3011']
+
+  - job_name: 'campaign-service'
+    static_configs:
+      - targets: ['campaign-service:3012']

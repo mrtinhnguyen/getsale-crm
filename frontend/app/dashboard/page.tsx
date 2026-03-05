@@ -15,7 +15,7 @@ const statCardsConfig = [
   { titleKey: 'companies', icon: Building2, href: '/dashboard/crm' },
   { titleKey: 'contacts', icon: Users, href: '/dashboard/crm' },
   { titleKey: 'messages', icon: MessageSquare, href: '/dashboard/messaging' },
-  { titleKey: 'deals', icon: TrendingUp, href: '/dashboard/pipeline' },
+  { titleKey: 'leads', icon: TrendingUp, href: '/dashboard/pipeline' },
 ];
 
 export default function DashboardPage() {
@@ -24,7 +24,7 @@ export default function DashboardPage() {
     companies: 0,
     contacts: 0,
     messages: 0,
-    deals: 0,
+    leads: 0,
   });
   const [loading, setLoading] = useState(true);
   const [upcomingReminders, setUpcomingReminders] = useState<Reminder[]>([]);
@@ -32,18 +32,25 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const [companiesRes, contactsRes, messagesRes, dealsRes] = await Promise.all([
+        const [companiesRes, contactsRes, messagesRes, pipelinesRes] = await Promise.all([
           axios.get(`${API_URL}/api/crm/companies`).catch(() => ({ data: [] })),
           axios.get(`${API_URL}/api/crm/contacts`).catch(() => ({ data: [] })),
           axios.get(`${API_URL}/api/messaging/inbox`).catch(() => ({ data: [] })),
-          axios.get(`${API_URL}/api/crm/deals`).catch(() => ({ data: [] })),
+          axios.get(`${API_URL}/api/pipeline`).catch(() => ({ data: [] })),
         ]);
+        const pipelines = Array.isArray(pipelinesRes.data) ? pipelinesRes.data : [];
+        const defaultPipeline = pipelines.find((p: { is_default?: boolean }) => p.is_default) || pipelines[0];
+        let leadsTotal = 0;
+        if (defaultPipeline?.id) {
+          const leadsRes = await axios.get(`${API_URL}/api/pipeline/leads`, { params: { pipelineId: defaultPipeline.id, limit: 1 } }).catch(() => ({ data: { pagination: { total: 0 } } }));
+          leadsTotal = leadsRes.data?.pagination?.total ?? 0;
+        }
 
         setStats({
           companies: companiesRes.data.length || 0,
           contacts: contactsRes.data.length || 0,
           messages: messagesRes.data.length || 0,
-          deals: dealsRes.data.length || 0,
+          leads: leadsTotal,
         });
       } catch (error) {
         console.error('Error fetching stats:', error);
@@ -69,7 +76,7 @@ export default function DashboardPage() {
     );
   }
 
-  const values = [stats.companies, stats.contacts, stats.messages, stats.deals];
+  const values = [stats.companies, stats.contacts, stats.messages, stats.leads];
 
   return (
     <div className="space-y-8">
@@ -117,7 +124,7 @@ export default function DashboardPage() {
               {upcomingReminders.slice(0, 8).map((r) => (
                 <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
                   <Link
-                    href={r.entity_type === 'contact' ? `/dashboard/crm?tab=contacts&open=${r.entity_id}` : `/dashboard/crm?tab=deals&open=${r.entity_id}`}
+                    href={r.entity_type === 'contact' ? `/dashboard/crm?tab=contacts&open=${r.entity_id}` : `/dashboard/pipeline`}
                     className="text-primary hover:underline truncate flex-1 min-w-0"
                   >
                     {r.title || new Date(r.remind_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
@@ -160,7 +167,7 @@ export default function DashboardPage() {
             <Link href="/dashboard/pipeline" className="block">
               <Button variant="secondary" className="w-full justify-start gap-2 h-11">
                 <TrendingUp className="w-4 h-4" />
-                {t('dashboard.newDeal')}
+                {t('dashboard.newLead')}
                 <ArrowRight className="w-4 h-4 ml-auto opacity-50" />
               </Button>
             </Link>

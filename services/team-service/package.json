@@ -14,7 +14,9 @@
     "bcryptjs": "^2.4.3",
     "@getsale/utils": "*",
     "@getsale/types": "*",
-    "@getsale/events": "*"
+    "@getsale/events": "*",
+    "@getsale/service-core": "*",
+    "@getsale/logger": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

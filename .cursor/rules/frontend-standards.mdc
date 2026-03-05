@@ -1,0 +1,84 @@
+---
+description: Frontend coding standards for Next.js application
+globs: frontend/**/*.tsx, frontend/**/*.ts
+alwaysApply: false
+---
+
+# Frontend Standards
+
+## Component Rules
+
+1. **Max 300 lines per component file.** Split into sub-components, hooks, utils.
+2. **One component per file** (except small private helpers).
+3. **Hooks in `hooks/` directory** — custom hooks for data fetching, WS subscriptions.
+4. **Entity stores in Zustand** — no local `useState` for shared entities.
+5. **`React.memo`** on all list item components to prevent re-renders.
+
+## File Structure
+
+```
+components/<feature>/
+  FeatureName.tsx       — main component
+  FeatureNameItem.tsx   — list item (React.memo)
+  FeatureNameHeader.tsx — header/toolbar
+hooks/
+  use-feature-data.ts   — data fetching hook
+  use-feature-ws.ts     — websocket subscription hook
+```
+
+## State Management Rules
+
+- **Global entity data** → Zustand store (contacts, leads, deals, messages)
+- **UI state** (modals, tabs, filters) → local `useState`
+- **Derived data** → `useMemo`
+- **Callbacks** → `useCallback` with proper deps
+- **Never** store server data only in local state if it's used across pages
+
+## API Layer
+
+- All API calls go through `lib/api/<domain>.ts`
+- Never call `apiClient` directly from components
+- API functions return typed data, handle errors internally
+- Use `try/catch` in hooks, show toast on error
+
+## Performance
+
+- Virtualize lists with >50 items (`react-virtuoso`)
+- `dynamic()` import for heavy components not visible on initial render
+- Debounce search inputs (300ms)
+- Never create objects/arrays in JSX props (causes re-renders)
+
+## TypeScript
+
+- No `any` — use `unknown` and narrow
+- Interface for component props
+- Shared types from `@getsale/types` where possible
+- Local interfaces in the component file when not shared
+
+## Security
+
+- Never store tokens in `localStorage` — use httpOnly cookies
+- Never use `dangerouslySetInnerHTML` without sanitization (DOMPurify)
+- Sanitize all user-generated content before rendering
+- Never expose API keys or secrets in client-side code
+- Validate data on frontend AND backend
+
+## Error Handling
+
+- Show user-friendly error messages (toast), never raw server errors
+- Implement global error boundary for React crashes
+- Log errors to monitoring (Sentry or similar) with user/org context
+- Handle network failures gracefully — show retry UI, not blank screens
+
+## Internationalization (i18n)
+
+- All user-facing strings go through `locales/` translation files
+- Never hardcode user-facing text in components
+- Use ICU message format for plurals and interpolation
+- Date/number formatting must respect user locale
+
+## Styling
+
+- Tailwind only — no inline styles, no CSS modules
+- Use `clsx()` for conditional classes
+- Semantic tokens from `tailwind.config.js` (not hardcoded colors)

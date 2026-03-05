@@ -1,0 +1,184 @@
+---
+description: Backend service coding standards for all microservices
+globs: services/*/src/**/*.ts, shared/*/src/**/*.ts
+alwaysApply: false
+---
+
+# Backend Service Standards
+
+## Service Structure
+
+Every service MUST follow this file structure:
+```
+services/<name>/src/
+  index.ts          — app setup, listen (≤60 lines)
+  routes/           — one file per resource (companies.ts, leads.ts)
+  middleware/        — service-specific middleware (if any)
+  validation.ts     — Zod schemas for this service
+  types.ts          — service-specific types (if any)
+```
+
+## Required Patterns
+
+### 1. Use `createServiceApp()` from `@getsale/service-core`
+```typescript
+import { createServiceApp } from '@getsale/service-core';
+const { app, pool, rabbitmq, log } = await createServiceApp({
+  name: 'crm-service',
+  port: 3002,
+});
+```
+
+### 2. NEVER use `console.log/error/warn` — use `@getsale/logger`
+```typescript
+// BAD
+console.log('Deal created:', dealId);
+// GOOD
+log.info({ message: 'Deal created', entity_type: 'deal', entity_id: dealId });
+```
+
+### 3. All endpoints MUST validate input with Zod
+```typescript
+import { validate } from '@getsale/service-core';
+router.post('/', validate(CreateSchema), async (req, res) => { ... });
+```
+
+### 4. Use `AppError` for business errors
+```typescript
+import { AppError, ErrorCodes } from '@getsale/service-core';
+throw new AppError(404, 'Deal not found', ErrorCodes.NOT_FOUND);
+```
+
+### 5. Always use `req.user` from middleware (not manual header extraction)
+```typescript
+// BAD
+const userId = req.headers['x-user-id'] as string;
+// GOOD — set by getUser middleware
+const { id, organizationId, role } = req.user;
+```
+
+### 6. Use `req.correlationId` for correlation
+```typescript
+log.info({ message: 'Processing', correlation_id: req.correlationId });
+```
+
+### 7. Transactions pattern
+```typescript
+const client = await pool.connect();
+try {
+  await client.query('BEGIN');
+  // ... operations
+  await client.query('COMMIT');
+  return result;
+} catch (err) {
+  await client.query('ROLLBACK').catch(() => {});
+  throw err;
+} finally {
+  client.release();
+}
+```
+
+### 8. Route files export a Router factory
+```typescript
+// routes/companies.ts
+import { Router } from 'express';
+import { Pool } from 'pg';
+import { RabbitMQClient } from '@getsale/utils';
+import { Logger } from '@getsale/logger';
+
+export function companiesRouter(deps: { pool: Pool; rabbitmq: RabbitMQClient; log: Logger }) {
+  const router = Router();
+  const { pool, rabbitmq, log } = deps;
+  // ... routes
+  return router;
+}
+```
+
+## Multi-Tenancy (CRITICAL for SaaS)
+
+### Every data query MUST be scoped to `organization_id`
+```typescript
+// BAD — data leak across tenants
+const deals = await pool.query('SELECT * FROM deals WHERE status = $1', [status]);
+
+// GOOD — always filter by organization
+const deals = await pool.query(
+  'SELECT * FROM deals WHERE organization_id = $1 AND status = $2',
+  [req.user.organizationId, status]
+);
+```
+
+### Never trust client-provided organization_id
+```typescript
+// BAD — client can forge organization
+const orgId = req.body.organizationId;
+
+// GOOD — always from authenticated session
+const orgId = req.user.organizationId;
+```
+
+## Rate Limiting
+
+- All public endpoints MUST have rate limiting
+- Auth endpoints: strict limits (5 req/min per IP)
+- API endpoints: per-user limits (100 req/min default)
+- Use `express-rate-limit` or service-level middleware
+
+## CORS
+
+- Never use `origin: '*'` in production
+- Whitelist specific frontend domains
+- Configure per environment (dev/staging/prod)
+
+## Health & Readiness
+
+Every service MUST expose:
+```typescript
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/ready', async (req, res) => {
+  // check DB, Redis, RabbitMQ connectivity
+});
+```
+
+## Graceful Shutdown
+
+Every service MUST handle SIGTERM:
+```typescript
+process.on('SIGTERM', async () => {
+  log.info({ message: 'Shutting down gracefully' });
+  await server.close();
+  await pool.end();
+  process.exit(0);
+});
+```
+
+## Idempotency
+
+State-changing operations (POST, PUT) should be idempotent where possible. Use `idempotency-key` header for payment/billing operations.
+
+## Error Handling
+
+- Every route handler uses `async` and wraps in the error handler automatically
+- `AppError` for 4xx errors with error codes
+- Unhandled errors become 500 with `INTERNAL_ERROR` code
+- NEVER expose stack traces or internal errors to clients
+
+## Soft Delete
+
+Prefer soft delete for SaaS data — use `deleted_at` timestamp instead of `DELETE`:
+```typescript
+// GOOD — soft delete, recoverable
+await pool.query('UPDATE contacts SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2', [id, orgId]);
+
+// All queries must exclude soft-deleted records
+// WHERE deleted_at IS NULL
+```
+
+## Naming Conventions
+
+- Files: `kebab-case.ts`
+- Variables/functions: `camelCase`
+- Types/interfaces: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Database columns: `snake_case`
+- API paths: `kebab-case`

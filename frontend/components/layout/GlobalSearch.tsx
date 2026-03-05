@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { Search, Building2, User, TrendingUp, ArrowRight, Loader2, MessageSquare, Send } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { clsx } from 'clsx';
-import { fetchCompanies, fetchContacts, fetchDeals, type Company, type Contact, type Deal } from '@/lib/api/crm';
+import { fetchCompanies, fetchContacts, type Company, type Contact } from '@/lib/api/crm';
+import { fetchPipelines, fetchLeads, type Lead } from '@/lib/api/pipeline';
 import { searchChats, type MessagingChatSearchItem } from '@/lib/api/messaging';
 
 const QUICK_LINKS = [
@@ -43,7 +44,7 @@ export function GlobalSearch() {
   const [results, setResults] = useState<{
     companies: Company[];
     contacts: Contact[];
-    deals: Deal[];
+    leads: Lead[];
     chats: MessagingChatSearchItem[];
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -62,20 +63,31 @@ export function GlobalSearch() {
     setLoading(true);
     setResults(null);
     try {
-      const [companiesRes, contactsRes, dealsRes, chatsRes] = await Promise.all([
+      const [companiesRes, contactsRes, chatsRes, pipelinesRes] = await Promise.all([
         fetchCompanies({ search: q, limit: SEARCH_LIMIT, page: 1 }),
         fetchContacts({ search: q, limit: SEARCH_LIMIT, page: 1 }),
-        fetchDeals({ search: q, limit: SEARCH_LIMIT, page: 1 }),
         searchChats(q, SEARCH_LIMIT),
+        fetchPipelines(),
       ]);
+      const pipelines = pipelinesRes ?? [];
+      const defaultPipeline = pipelines.find((p) => p.is_default) || pipelines[0];
+      let leads: Lead[] = [];
+      if (defaultPipeline?.id) {
+        try {
+          const leadsRes = await fetchLeads({ pipelineId: defaultPipeline.id, limit: SEARCH_LIMIT });
+          leads = leadsRes.items ?? [];
+        } catch {
+          leads = [];
+        }
+      }
       setResults({
         companies: companiesRes.items,
         contacts: contactsRes.items,
-        deals: dealsRes.items,
+        leads,
         chats: chatsRes.items,
       });
     } catch {
-      setResults({ companies: [], contacts: [], deals: [], chats: [] });
+      setResults({ companies: [], contacts: [], leads: [], chats: [] });
     } finally {
       setLoading(false);
     }
@@ -107,11 +119,18 @@ export function GlobalSearch() {
     return () => document.removeEventListener('click', onClick);
   }, [open]);
 
-  const goToCrmOpen = (tab: 'companies' | 'contacts' | 'deals', id: string) => {
+  const goToCrmOpen = (tab: 'companies' | 'contacts', id: string) => {
     setOpen(false);
     setQuery('');
     setResults(null);
     router.push(`/dashboard/crm?tab=${tab}&open=${encodeURIComponent(id)}`);
+  };
+
+  const goToPipeline = () => {
+    setOpen(false);
+    setQuery('');
+    setResults(null);
+    router.push('/dashboard/pipeline');
   };
 
   const goToMessagingChat = (bdAccountId: string, channelId: string) => {
@@ -125,7 +144,7 @@ export function GlobalSearch() {
   const showSearch = query.trim().length >= MIN_QUERY_LENGTH;
   const hasResults =
     results &&
-    (results.companies.length > 0 || results.contacts.length > 0 || results.deals.length > 0 || results.chats.length > 0);
+    (results.companies.length > 0 || results.contacts.length > 0 || results.leads.length > 0 || results.chats.length > 0);
 
   return (
     <div className="relative" ref={containerRef}>
@@ -210,24 +229,27 @@ export function GlobalSearch() {
                         </div>
                       </div>
                     )}
-                    {results!.deals.length > 0 && (
+                    {results!.leads.length > 0 && (
                       <div>
                         <p className="px-2 py-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          {t('crm.deals')}
+                          {t('crm.leads', 'Лиды')}
                         </p>
                         <div className="space-y-0.5">
-                          {results!.deals.map((d) => (
-                            <button
-                              key={d.id}
-                              type="button"
-                              onClick={() => goToCrmOpen('deals', d.id)}
-                              className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-accent transition-colors text-left"
-                            >
-                              <TrendingUp className="w-4 h-4 text-muted-foreground shrink-0" />
-                              <span className="text-sm font-medium text-foreground truncate">{d.title}</span>
-                              <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0 ml-auto" />
-                            </button>
-                          ))}
+                          {results!.leads.slice(0, SEARCH_LIMIT).map((lead) => {
+                            const name = [lead.first_name, lead.last_name].filter(Boolean).join(' ').trim() || lead.display_name || lead.email || lead.telegram_id || lead.id;
+                            return (
+                              <button
+                                key={lead.id}
+                                type="button"
+                                onClick={goToPipeline}
+                                className="flex items-center gap-3 w-full px-3 py-2 rounded-lg hover:bg-accent transition-colors text-left"
+                              >
+                                <TrendingUp className="w-4 h-4 text-muted-foreground shrink-0" />
+                                <span className="text-sm font-medium text-foreground truncate">{name}</span>
+                                <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0 ml-auto" />
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                     )}

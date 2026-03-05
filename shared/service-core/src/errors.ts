@@ -1,17 +1,21 @@
-/**
- * Centralized error handling for CRM Service.
- * Use AppError for known business/validation errors; others return 500.
- */
-
 export class AppError extends Error {
   constructor(
     public readonly statusCode: number,
     message: string,
-    public readonly code?: string
+    public readonly code?: string,
+    public readonly details?: unknown
   ) {
     super(message);
     this.name = 'AppError';
     Object.setPrototypeOf(this, AppError.prototype);
+  }
+
+  toJSON() {
+    return {
+      error: this.message,
+      code: this.code,
+      ...(this.details != null ? { details: this.details } : {}),
+    };
   }
 }
 
@@ -24,4 +28,11 @@ export const ErrorCodes = {
   VALIDATION: 'VALIDATION',
   CONFLICT: 'CONFLICT',
   BAD_REQUEST: 'BAD_REQUEST',
+  FORBIDDEN: 'FORBIDDEN',
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
+
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

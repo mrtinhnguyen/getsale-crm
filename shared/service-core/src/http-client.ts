@@ -1,0 +1,139 @@
+import { Logger } from '@getsale/logger';
+
+export interface HttpClientOptions {
+  baseUrl: string;
+  timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
+  name: string;
+}
+
+interface RequestOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  timeoutMs?: number;
+}
+
+export class ServiceHttpClient {
+  private baseUrl: string;
+  private defaultTimeout: number;
+  private retries: number;
+  private retryDelay: number;
+  private name: string;
+  private log: Logger;
+
+  constructor(options: HttpClientOptions, log: Logger) {
+    this.baseUrl = options.baseUrl.replace(/\/$/, '');
+    this.defaultTimeout = options.timeoutMs ?? 10_000;
+    this.retries = options.retries ?? 2;
+    this.retryDelay = options.retryDelayMs ?? 500;
+    this.name = options.name;
+    this.log = log;
+  }
+
+  async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const method = options.method ?? 'GET';
+    const timeout = options.timeoutMs ?? this.defaultTimeout;
+
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= this.retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options.headers,
+          },
+          body: options.body != null ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          let parsed: unknown;
+          try { parsed = JSON.parse(body); } catch { parsed = body; }
+
+          if (res.status >= 400 && res.status < 500) {
+            throw new ServiceCallError(
+              `${this.name} ${method} ${path} returned ${res.status}`,
+              res.status,
+              parsed
+            );
+          }
+          throw new ServiceCallError(
+            `${this.name} ${method} ${path} returned ${res.status}`,
+            res.status,
+            parsed
+          );
+        }
+
+        const data = await res.json() as T;
+        return data;
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (err instanceof ServiceCallError && err.statusCode >= 400 && err.statusCode < 500) {
+          throw err;
+        }
+
+        if (attempt < this.retries) {
+          const delay = this.retryDelay * Math.pow(2, attempt);
+          this.log.warn({
+            message: `${this.name} call failed, retrying`,
+            http_method: method,
+            http_path: path,
+            attempt: attempt + 1,
+            delay_ms: delay,
+            error: lastError.message,
+          });
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+
+    this.log.error({
+      message: `${this.name} call failed after ${this.retries + 1} attempts`,
+      http_method: method,
+      http_path: path,
+      error: lastError?.message,
+    });
+
+    throw lastError;
+  }
+
+  async get<T = unknown>(path: string, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'GET', headers });
+  }
+
+  async post<T = unknown>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'POST', body, headers });
+  }
+
+  async patch<T = unknown>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'PATCH', body, headers });
+  }
+
+  async delete<T = unknown>(path: string, headers?: Record<string, string>): Promise<T> {
+    return this.request<T>(path, { method: 'DELETE', headers });
+  }
+}
+
+export class ServiceCallError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly body?: unknown
+  ) {
+    super(message);
+    this.name = 'ServiceCallError';
+  }
+}
