@@ -6,7 +6,7 @@ import { setCurrentMessagingChat } from '@/lib/messaging-open-chat';
 import {
   fetchContactNotes, fetchContactReminders,
 } from '@/lib/api/crm';
-import type { Chat, LeadContext } from '../types';
+import type { BDAccount, Chat, LeadContext } from '../types';
 import { MESSAGES_PAGE_SIZE, MAX_CACHED_CHATS } from '../types';
 import { getDraftKey, getMessagesCacheKey, mapRawChatsToChatList, mapNewLeadRowToChat } from '../utils';
 import type { MessagingState } from './useMessagingState';
@@ -23,10 +23,10 @@ export function useMessagingData(s: MessagingState) {
   // ─── Fetch Accounts ──────────────────────────────────────────────
   const fetchAccounts = useCallback(async () => {
     try {
-      const response = await apiClient.get('/api/bd-accounts');
+      const response = await apiClient.get<BDAccount[]>('/api/bd-accounts');
       const user = useAuthStore.getState().user;
       const isBidi = user?.role?.toLowerCase() === 'bidi';
-      let list = response.data || [];
+      let list: BDAccount[] = response.data || [];
       if (isBidi) list = list.filter((a) => a.is_owner === true);
       const sorted = [...list].sort((a, b) => (b.is_owner ? 1 : 0) - (a.is_owner ? 1 : 0));
       s.setAccounts(sorted);
