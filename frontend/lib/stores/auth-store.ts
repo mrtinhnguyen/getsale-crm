@@ -27,13 +27,10 @@ interface AuthState {
   refreshUser: () => Promise<void>;
 }
 
-// Cookie-setting operations (login, signup, refresh, switch-workspace, logout) MUST go
-// directly to the gateway so Set-Cookie headers reach the browser without Next.js rewrite interference.
-// Read-only operations (me, workspaces) go to same origin via Next.js rewrite (cookie is sent automatically).
-const GATEWAY_URL = typeof window !== 'undefined'
-  ? (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
-  : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
-const SAME_ORIGIN_URL = typeof window !== 'undefined'
+// In the browser use same origin ('') so all auth requests (signin, refresh, me, etc.) go to
+// the app origin (e.g. app.getsale.ai). Next.js rewrites /api/* to the gateway; cookies are then
+// set and sent for the same domain. On the server (SSR) use env URL for gateway calls.
+const API_BASE_URL = typeof window !== 'undefined'
   ? ''
   : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
 const axiosConfig = { withCredentials: true };
@@ -47,7 +44,7 @@ export const useAuthStore = create<AuthState>()(
 
       login: async (email: string, password: string) => {
         const response = await axios.post(
-          `${GATEWAY_URL}/api/auth/signin`,
+          `${API_BASE_URL}/api/auth/signin`,
           { email, password },
           axiosConfig
         );
@@ -59,21 +56,21 @@ export const useAuthStore = create<AuthState>()(
         const body: Record<string, unknown> = { email, password };
         if (inviteToken) body.inviteToken = inviteToken;
         else body.organizationName = organizationName ?? 'My Organization';
-        const response = await axios.post(`${GATEWAY_URL}/api/auth/signup`, body, axiosConfig);
+        const response = await axios.post(`${API_BASE_URL}/api/auth/signup`, body, axiosConfig);
         const { user } = response.data;
         set({ user, isAuthenticated: true });
       },
 
       logout: async () => {
         try {
-          await axios.post(`${GATEWAY_URL}/api/auth/logout`, {}, axiosConfig);
+          await axios.post(`${API_BASE_URL}/api/auth/logout`, {}, axiosConfig);
         } catch (_) {}
         set({ user: null, isAuthenticated: false, workspaces: null });
       },
 
       refreshAccessToken: async () => {
         const response = await axios.post<{ user: User }>(
-          `${GATEWAY_URL}/api/auth/refresh`,
+          `${API_BASE_URL}/api/auth/refresh`,
           {},
           axiosConfig
         );
@@ -86,7 +83,7 @@ export const useAuthStore = create<AuthState>()(
         if (!user) return;
         try {
           const response = await axios.get<Workspace[]>(
-            `${SAME_ORIGIN_URL}/api/auth/workspaces`,
+            `${API_BASE_URL}/api/auth/workspaces`,
             axiosConfig
           );
           set({ workspaces: response.data });
@@ -99,7 +96,7 @@ export const useAuthStore = create<AuthState>()(
         const { user } = get();
         if (!user) throw new Error('Not authenticated');
         const response = await axios.post<{ user: User }>(
-          `${GATEWAY_URL}/api/auth/switch-workspace`,
+          `${API_BASE_URL}/api/auth/switch-workspace`,
           { organizationId },
           axiosConfig
         );
@@ -119,7 +116,7 @@ export const useAuthStore = create<AuthState>()(
       refreshUser: async () => {
         try {
           const response = await axios.get<{ id: string; email: string; organizationId: string; role: string }>(
-            `${SAME_ORIGIN_URL}/api/auth/me`,
+            `${API_BASE_URL}/api/auth/me`,
             {
               ...axiosConfig,
               params: { _: typeof window !== 'undefined' ? Date.now() : 0 },
