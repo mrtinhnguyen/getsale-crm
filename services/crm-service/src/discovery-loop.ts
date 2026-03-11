@@ -91,7 +91,9 @@ async function processNextTasks(deps: Deps) {
             status: 'failed',
             error: errMsg,
           });
-        } catch (_) {}
+        } catch (e) {
+          log.warn({ message: 'Failed to push parse progress after task failure', taskId: task.id, error: String(e) });
+        }
       }
     }
 

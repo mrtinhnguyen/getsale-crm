@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
-import { extractBearerToken, canPermission, auditLog, resolveRole, getClientIp } from '../helpers';
+import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import { extractBearerToken, auditLog, resolveRole, getClientIp } from '../helpers';
 import { AUTH_COOKIE_ACCESS } from '../cookies';
 
 interface Deps {
@@ -12,7 +12,7 @@ interface Deps {
 
 export function organizationRouter({ pool, log }: Deps): Router {
   const router = Router();
-
+  const checkPermission = canPermission(pool);
   const tokenFromReq = (req: { cookies?: { [k: string]: string } }) => req.cookies?.[AUTH_COOKIE_ACCESS];
 
   router.get('/organization', asyncHandler(async (req, res) => {
@@ -25,7 +25,7 @@ export function organizationRouter({ pool, log }: Deps): Router {
   router.patch('/organization', asyncHandler(async (req, res) => {
     const decoded = extractBearerToken(req, tokenFromReq(req));
     const role = await resolveRole(pool, decoded.userId, decoded.organizationId, decoded.role);
-    const canUpdate = await canPermission(pool, role, 'workspace', 'update');
+    const canUpdate = await checkPermission(role, 'workspace', 'update');
     if (!canUpdate) throw new AppError(403, 'Only owner or admin can update workspace settings', ErrorCodes.FORBIDDEN);
 
     const { name, slug } = req.body;
@@ -93,7 +93,7 @@ export function organizationRouter({ pool, log }: Deps): Router {
   router.get('/audit-logs', asyncHandler(async (req, res) => {
     const decoded = extractBearerToken(req, tokenFromReq(req));
     const role = await resolveRole(pool, decoded.userId, decoded.organizationId, decoded.role);
-    const allowed = await canPermission(pool, role, 'audit', 'read');
+    const allowed = await checkPermission(role, 'audit', 'read');
     if (!allowed) throw new AppError(403, 'Only owner or admin can view audit logs', ErrorCodes.FORBIDDEN);
 
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 500);

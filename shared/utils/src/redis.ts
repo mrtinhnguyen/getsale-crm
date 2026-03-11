@@ -48,6 +48,15 @@ export class RedisClient {
     await this.client.del(key);
   }
 
+  /** Increment key (atomic), set TTL if provided. Returns new count. Use for rate limiting. */
+  async incr(key: string, ttlSeconds?: number): Promise<number> {
+    const count = await this.client.incr(key);
+    if (ttlSeconds != null && count === 1) {
+      await this.client.expire(key, ttlSeconds);
+    }
+    return count;
+  }
+
   /** Publish message to a channel (for server-sent events / push to user). */
   async publish(channel: string, message: string): Promise<void> {
     await this.client.publish(channel, message);

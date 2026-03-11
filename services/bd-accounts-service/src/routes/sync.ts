@@ -5,6 +5,7 @@ import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
 import { TelegramManager, type ResolvedSource } from '../telegram-manager';
 import {
+  getAccountOr404,
   requireAccountOwner,
   requireBidiOwnAccount,
   isAccountOwnerName,
@@ -28,13 +29,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     const forceRefresh = req.query.refresh === '1';
     if (!forceRefresh) {
@@ -68,13 +63,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const forceRefresh = req.query.refresh === '1';
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     if (!forceRefresh) {
       const rows = await pool.query(
@@ -104,14 +93,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const forceRefresh = req.query.refresh === '1';
 
-    const accountResult = await pool.query(
-      'SELECT id, telegram_id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
-    const accountTelegramId = accountResult.rows[0].telegram_id != null ? String(accountResult.rows[0].telegram_id).trim() : null;
+    const account = await getAccountOr404<{ id: string; telegram_id?: string | null }>(pool, id, organizationId, 'id, telegram_id');
+    const accountTelegramId = account.telegram_id != null ? String(account.telegram_id).trim() : null;
     const excludeSelf = (dialogs: any[]) =>
       accountTelegramId ? dialogs.filter((d: any) => !(d.isUser && String(d.id).trim() === accountTelegramId)) : dialogs;
 
@@ -207,15 +190,9 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
-    await ensureFoldersFromSyncChats(pool, telegramManager, id);
+    await ensureFoldersFromSyncChats(pool, telegramManager, id, log);
     let result = await pool.query(
       'SELECT id, folder_id, folder_title, order_index, COALESCE(is_user_created, false) AS is_user_created, icon FROM bd_account_sync_folders WHERE bd_account_id = $1 ORDER BY order_index, folder_id',
       [id]
@@ -246,13 +223,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const user = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     if (!telegramManager.isConnected(id)) {
       throw new AppError(400, 'Account is not connected to Telegram', ErrorCodes.BAD_REQUEST);
@@ -268,13 +239,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const { folders, extraChats } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
@@ -346,13 +311,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const { folder_title: folderTitle, icon } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
@@ -385,13 +344,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const { order } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
@@ -419,13 +372,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id: accountId, folderRowId } = req.params;
     const { icon, folder_title: folderTitle } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, accountId, user);
     const updates: string[] = [];
     const values: any[] = [];
@@ -461,13 +408,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const user = req.user;
     const { id: accountId, folderRowId } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, accountId, user);
     const isOwner = await requireAccountOwner(pool, accountId, user);
     if (!isOwner) {
@@ -501,13 +442,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const user = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     res.json({ success: true });
   }));
@@ -517,13 +452,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const user = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
@@ -538,13 +467,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     const chatsRows = await pool.query(
       'SELECT id, telegram_chat_id, title, peer_type, is_folder, folder_id, created_at FROM bd_account_sync_chats WHERE bd_account_id = $1 ORDER BY folder_id NULLS LAST, created_at',
@@ -577,13 +500,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const typeParam = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : 'all';
     const type = typeParam === 'groups' || typeParam === 'channels' ? typeParam : 'all';
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     if (q.length < 2) {
       throw new AppError(400, 'Query must be at least 2 characters', ErrorCodes.VALIDATION);
     }
@@ -648,13 +565,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     const channels = await telegramManager.getAdminedPublicChannels(id);
     res.json(channels);
   }));
@@ -667,13 +578,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const offset = Math.max(0, parseInt(String(req.query.offset), 10) || 0);
     const excludeAdmins = req.query.excludeAdmins === 'true' || req.query.excludeAdmins === '1';
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     if (!chatId || chatId.length > 128) {
       throw new AppError(400, 'Invalid chatId', ErrorCodes.VALIDATION);
     }
@@ -698,13 +603,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const depth = Math.min(2000, Math.max(1, parseInt(String(req.query.depth), 10) || 100));
     const excludeAdmins = req.query.excludeAdmins === 'true' || req.query.excludeAdmins === '1';
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     if (!chatId || chatId.length > 128) {
       throw new AppError(400, 'Invalid chatId', ErrorCodes.VALIDATION);
     }
@@ -724,13 +623,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id, chatId } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     if (!chatId || chatId.length > 128) {
       throw new AppError(400, 'Invalid chatId', ErrorCodes.VALIDATION);
     }
@@ -758,13 +651,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       .map((x) => (typeof x === 'string' ? x : String(x)).trim())
       .filter((x) => x.length > 0);
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     const results: Array<{ chatId?: string; title?: string; peerType?: string; error?: string }> = [];
     for (const input of inputs) {
       try {
@@ -790,13 +677,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       .map((x) => (typeof x === 'string' ? x : String(x)).trim())
       .filter((x) => x.length > 0);
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     const results: Array<ResolvedSource & { error?: string }> = [];
     for (const input of sources) {
       try {
@@ -825,13 +706,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id } = req.params;
     const { chats } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id, telegram_id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    const account = await getAccountOr404<{ id: string; telegram_id?: string | null }>(pool, id, user.organizationId, 'id, telegram_id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
@@ -846,7 +721,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, `chats array exceeds maximum of ${MAX_SYNC_CHATS}`, ErrorCodes.VALIDATION);
     }
 
-    const accountTelegramId = accountResult.rows[0].telegram_id != null ? String(accountResult.rows[0].telegram_id).trim() : null;
+    const accountTelegramId = account.telegram_id != null ? String(account.telegram_id).trim() : null;
 
     await pool.query('DELETE FROM bd_account_sync_chats WHERE bd_account_id = $1', [id]);
     await pool.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
@@ -885,7 +760,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     }
     log.info({ message: `Saved ${inserted} sync chats (requested ${chats.length})`, entity_id: id });
 
-    await ensureFoldersFromSyncChats(pool, telegramManager, id);
+    await ensureFoldersFromSyncChats(pool, telegramManager, id, log);
 
     // Обогатить контакты по личным чатам из Telegram (first_name, last_name, username, phone, bio, premium) — в БД.
     // Важно: после первичной синхронизации пользователь ожидает, что мета уже сохранена, поэтому ждём завершения.
@@ -921,21 +796,13 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
 
     log.info({ message: 'sync-start requested', entity_id: id, organization_id: user.organizationId });
 
-    const accountResult = await pool.query(
-      'SELECT id, organization_id, sync_status, sync_started_at FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    const account = await getAccountOr404<{ id: string; organization_id: string; sync_status?: string; sync_started_at?: unknown }>(pool, id, user.organizationId, 'id, organization_id, sync_status, sync_started_at');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     if (!isOwner) {
       throw new AppError(403, 'Only the account owner can start sync', ErrorCodes.FORBIDDEN);
     }
-
-    const account = accountResult.rows[0];
-    const startedAt = account.sync_started_at ? new Date(account.sync_started_at).getTime() : 0;
+    const startedAt = account.sync_started_at ? new Date(account.sync_started_at as string | number | Date).getTime() : 0;
     const isStale = account.sync_status === 'syncing' && startedAt && Date.now() - startedAt > SYNC_STALE_MINUTES * 60 * 1000;
 
     if (isStale) {
@@ -981,17 +848,9 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT sync_status, sync_error, sync_progress_total, sync_progress_done, sync_started_at, sync_completed_at
-       FROM bd_accounts WHERE id = $1 AND organization_id = $2`,
-      [id, organizationId]
-    );
-    if (result.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
-    const row = result.rows[0];
+    const row = await getAccountOr404<{ sync_status?: string; sync_error?: string | null; sync_progress_total?: number | null; sync_progress_done?: number | null; sync_started_at?: unknown; sync_completed_at?: unknown }>(pool, id, organizationId, 'sync_status, sync_error, sync_progress_total, sync_progress_done, sync_started_at, sync_completed_at');
     let syncStatus = row.sync_status ?? 'idle';
-    const startedAt = row.sync_started_at ? new Date(row.sync_started_at).getTime() : 0;
+    const startedAt = row.sync_started_at ? new Date(row.sync_started_at as string | number | Date).getTime() : 0;
     if (syncStatus === 'syncing' && startedAt && Date.now() - startedAt > SYNC_STALE_MINUTES * 60 * 1000) {
       await pool.query(
         "UPDATE bd_accounts SET sync_status = 'idle', sync_error = 'Синхронизация прервана по таймауту' WHERE id = $1",
@@ -1013,13 +872,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const { id: accountId, chatId } = req.params;
     const { folder_ids: folderIdsRaw, folder_id: legacyFolderId } = req.body;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, accountId, user);
 
     let folderIds: number[] = [];
@@ -1058,13 +911,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     const user = req.user;
     const { id: accountId, chatId } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, accountId, user);
     const isOwner = await requireAccountOwner(pool, accountId, user);
     const canDeleteChat = await checkPermission(user.role, 'bd_accounts', 'chat.delete');

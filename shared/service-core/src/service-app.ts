@@ -83,6 +83,15 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
   if (!config.skipUserExtract) {
     app.use(extractUser());
   }
+  // In production, forbid default or missing INTERNAL_AUTH_SECRET (S9)
+  if (process.env.NODE_ENV === 'production') {
+    const secret = process.env.INTERNAL_AUTH_SECRET?.trim();
+    if (!secret || secret === 'dev_internal_auth_secret') {
+      throw new Error(
+        'INTERNAL_AUTH_SECRET must be set to a non-default value in production. Do not use dev_internal_auth_secret.'
+      );
+    }
+  }
   // Require X-Internal-Auth when INTERNAL_AUTH_SECRET is set (gateway bypass prevention)
   if (process.env.INTERNAL_AUTH_SECRET?.trim()) {
     app.use((req, res, next) => {

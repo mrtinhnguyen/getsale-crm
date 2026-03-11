@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
 import { TelegramManager } from '../telegram-manager';
+import { getAccountOr404 } from '../helpers';
 
 interface Deps {
   pool: Pool;
@@ -18,13 +19,7 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     const result = await telegramManager.downloadAccountProfilePhoto(id);
     if (!result) {
@@ -40,13 +35,7 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id, chatId } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     const result = await telegramManager.downloadChatProfilePhoto(id, chatId);
     if (!result) {
@@ -67,13 +56,7 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'channelId and messageId query params required', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
 
     try {
       const result = await telegramManager.downloadMessageMedia(id, String(channelId), String(messageId));
@@ -84,8 +67,9 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
       res.setHeader('Content-Type', result.mimeType);
       res.setHeader('Cache-Control', 'private, max-age=3600');
       res.send(result.buffer);
-    } catch (error: any) {
-      if (error?.message?.includes('not connected')) {
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('not connected')) {
         throw new AppError(400, 'Account is not connected', ErrorCodes.BAD_REQUEST);
       }
       throw error;

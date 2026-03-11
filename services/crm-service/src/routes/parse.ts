@@ -134,15 +134,19 @@ export function parseRouter({ pool, log, bdAccountsClient, redis }: Deps): Route
     const keepalive = setInterval(() => {
       try {
         res.write(': keepalive\n\n');
-      } catch (_) {}
+      } catch (e) {
+        if (!res.writableEnded) log.warn({ message: 'Parse SSE keepalive write failed', taskId, error: String(e) });
+      }
     }, PARSE_SSE_KEEPALIVE_MS);
 
     req.on('close', () => {
       clearInterval(interval);
       clearInterval(keepalive);
       try {
-        res.end();
-      } catch (_) {}
+        if (!res.writableEnded) res.end();
+      } catch (e) {
+        log.warn({ message: 'Parse SSE end failed on close', taskId, error: String(e) });
+      }
     });
   }));
 

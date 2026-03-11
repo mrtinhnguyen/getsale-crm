@@ -745,7 +745,9 @@ export default function PipelinePage() {
                     try {
                       const { id } = JSON.parse(raw);
                       if (id) handleDrop(id, stage.id);
-                    } catch (_) {}
+                    } catch (e) {
+                      console.warn('[pipeline] drop parse/handle failed', e);
+                    }
                   }
                 }}
               >

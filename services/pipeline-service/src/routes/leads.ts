@@ -54,6 +54,10 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM leads l WHERE ${where}`, params);
     const total = countResult.rows[0]?.total ?? 0;
 
+    params.push(limitNum, (pageNum - 1) * limitNum);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
+
     const result = await pool.query(
       `SELECT l.id, l.contact_id, l.pipeline_id, l.stage_id, l.order_index, l.created_at, l.updated_at, l.responsible_id, l.revenue_amount,
         c.first_name, c.last_name, c.display_name, c.username, c.email, c.telegram_id,
@@ -63,7 +67,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
        LEFT JOIN users u ON u.id = l.responsible_id
        WHERE ${where}
        ORDER BY l.order_index ASC, l.created_at ASC
-       LIMIT ${limitNum} OFFSET ${(pageNum - 1) * limitNum}`,
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     );
 
@@ -301,6 +305,16 @@ async function publishStageChange(p: StageChangeParams) {
     );
   } catch (logErr) {
     p.log.warn({ message: 'lead_activity_log insert failed', entity_id: p.leadId, error: String(logErr) });
+  }
+
+  try {
+    await p.pool.query(
+      `INSERT INTO stage_history (organization_id, entity_type, entity_id, pipeline_id, from_stage_id, to_stage_id, changed_by, source, correlation_id)
+       VALUES ($1, 'lead', $2, $3, $4, $5, $6, 'manual', $7)`,
+      [p.organizationId, p.leadId, p.pipelineId, p.fromStageId, p.toStageId, p.userId, eventId]
+    );
+  } catch (histErr) {
+    p.log.warn({ message: 'stage_history insert failed', entity_id: p.leadId, error: String(histErr) });
   }
 
   const event = {

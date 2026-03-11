@@ -3,6 +3,23 @@ import { Logger } from '@getsale/logger';
 import { AppError, ErrorCodes } from '@getsale/service-core';
 import { TelegramManager } from './telegram-manager';
 
+/** Row from bd_account_sync_folders (folder_id). */
+export interface FolderRow {
+  folder_id: number;
+}
+
+/** Minimal dialog shape returned by TelegramManager.getDialogsAll / filter (GramJS dialog-like). */
+export interface TelegramDialogLike {
+  id?: unknown;
+  name?: string;
+  isChannel?: boolean;
+  isGroup?: boolean;
+  pinned?: boolean;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+}
+
 export const SYNC_STALE_MINUTES = 15;
 export const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB (Telegram limit)
 export const BULK_SEND_DELAY_MS = 2000;
@@ -88,6 +105,23 @@ export async function requireBidiOwnAccount(
   }
 }
 
+/** Fetch BD account by id and organizationId or throw 404. Use to DRY "BD account not found" checks. */
+export async function getAccountOr404<T = Record<string, unknown>>(
+  pool: Pool,
+  accountId: string,
+  organizationId: string,
+  columns = 'id, organization_id, telegram_id, phone_number, is_active, is_demo, connected_at, last_activity, created_at, sync_status, sync_progress_done, sync_progress_total, sync_error, created_by_user_id, first_name, last_name, username, bio, photo_file_id, display_name'
+): Promise<T> {
+  const r = await pool.query(
+    `SELECT ${columns} FROM bd_accounts WHERE id = $1 AND organization_id = $2 LIMIT 1`,
+    [accountId, organizationId]
+  );
+  if (r.rows.length === 0) {
+    throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
+  }
+  return r.rows[0] as T;
+}
+
 export function isAccountOwnerName(
   account: { display_name?: string | null; username?: string | null; first_name?: string | null },
   title: string
@@ -137,7 +171,8 @@ export async function fetchFoldersFromTelegramAndSave(
 export async function ensureFoldersFromSyncChats(
   pool: Pool,
   telegramManager: TelegramManager,
-  accountId: string
+  accountId: string,
+  log?: Logger
 ): Promise<void> {
   const distinct = await pool.query(
     `SELECT DISTINCT folder_id FROM (
@@ -153,7 +188,7 @@ export async function ensureFoldersFromSyncChats(
     'SELECT folder_id FROM bd_account_sync_folders WHERE bd_account_id = $1',
     [accountId]
   );
-  const existingIds = new Set(existing.rows.map((r: any) => Number(r.folder_id)));
+  const existingIds = new Set((existing.rows as FolderRow[]).map((r) => Number(r.folder_id)));
 
   let filtersByFolder: Map<number, { title: string; emoticon?: string }> = new Map();
   try {
@@ -161,7 +196,9 @@ export async function ensureFoldersFromSyncChats(
       const filters = await telegramManager.getDialogFilters(accountId);
       for (const f of filters) filtersByFolder.set(f.id, { title: f.title, emoticon: f.emoticon });
     }
-  } catch (_) {}
+  } catch (e) {
+    if (log) log.warn({ message: 'Failed to load dialog filters for folder titles', accountId, error: String(e) });
+  }
 
   const defaultTitles: Record<number, string> = { 0: 'Все чаты', 1: 'Архив' };
   const defaultIcons: Record<number, string> = { 0: '💬', 1: '📁' };
@@ -205,40 +242,41 @@ export async function refreshChatsFromFolders(
   );
   if (foldersRows.rows.length === 0) return;
 
-  let allDialogs0: any[] = [];
-  let allDialogs1: any[] = [];
-  const hasFolder0 = foldersRows.rows.some((r: any) => Number(r.folder_id) === 0);
-  const hasFolder1 = foldersRows.rows.some((r: any) => Number(r.folder_id) === 1);
-  if (hasFolder0 || foldersRows.rows.some((r: any) => Number(r.folder_id) >= 2)) {
+  let allDialogs0: TelegramDialogLike[] = [];
+  let allDialogs1: TelegramDialogLike[] = [];
+  const folderRows = foldersRows.rows as { folder_id: number }[];
+  const hasFolder0 = folderRows.some((r) => Number(r.folder_id) === 0);
+  const hasFolder1 = folderRows.some((r) => Number(r.folder_id) === 1);
+  if (hasFolder0 || folderRows.some((r) => Number(r.folder_id) >= 2)) {
     try {
-      allDialogs0 = await telegramManager.getDialogsAll(accountId, 0, { maxDialogs: 3000, delayEveryN: 100, delayMs: 600 });
-    } catch (err: any) {
-      log.warn({ message: 'refreshChatsFromFolders getDialogsAll(0) failed', error: err?.message, entity_id: accountId });
+      allDialogs0 = (await telegramManager.getDialogsAll(accountId, 0, { maxDialogs: 3000, delayEveryN: 100, delayMs: 600 })) as TelegramDialogLike[];
+    } catch (err: unknown) {
+      log.warn({ message: 'refreshChatsFromFolders getDialogsAll(0) failed', error: err instanceof Error ? err.message : String(err), entity_id: accountId });
     }
   }
   if (hasFolder1) {
     try {
-      allDialogs1 = await telegramManager.getDialogsAll(accountId, 1, { maxDialogs: 2000, delayEveryN: 100, delayMs: 600 });
-    } catch (err: any) {
-      log.warn({ message: 'refreshChatsFromFolders getDialogsAll(1) failed', error: err?.message, entity_id: accountId });
+      allDialogs1 = (await telegramManager.getDialogsAll(accountId, 1, { maxDialogs: 2000, delayEveryN: 100, delayMs: 600 })) as TelegramDialogLike[];
+    } catch (err: unknown) {
+      log.warn({ message: 'refreshChatsFromFolders getDialogsAll(1) failed', error: err instanceof Error ? err.message : String(err), entity_id: accountId });
     }
   }
-  const mergedById = new Map<string, any>();
+  const mergedById = new Map<string, TelegramDialogLike>();
   for (const d of [...allDialogs0, ...allDialogs1]) {
     if (!mergedById.has(String(d.id))) mergedById.set(String(d.id), d);
   }
   const merged = Array.from(mergedById.values());
 
   for (const row of foldersRows.rows) {
-    const folderId = Number(row.folder_id);
-    let dialogs: any[] = [];
+    const folderId = Number((row as { folder_id: number }).folder_id);
+    let dialogs: TelegramDialogLike[] = [];
     try {
       if (folderId === 0) dialogs = allDialogs0;
       else if (folderId === 1) dialogs = allDialogs1;
       else {
         const filterRaw = await telegramManager.getDialogFilterRaw(accountId, folderId);
         const { include: includePeerIds, exclude: excludePeerIds } = TelegramManager.getFilterIncludeExcludePeerIds(filterRaw);
-        dialogs = merged.filter((d: any) => TelegramManager.dialogMatchesFilter(d, filterRaw, includePeerIds, excludePeerIds));
+        dialogs = merged.filter((d) => TelegramManager.dialogMatchesFilter({ ...d, id: String(d.id ?? '') }, filterRaw, includePeerIds, excludePeerIds));
       }
       for (const d of dialogs) {
         const chatId = String(d.id ?? '').trim();
@@ -270,21 +308,21 @@ export async function refreshChatsFromFolders(
         if (peerType === 'user' && organizationId) {
           try {
             await telegramManager.enrichContactFromDialog(organizationId, chatId, {
-              firstName: (d as any).first_name,
-              lastName: (d as any).last_name,
-              username: (d as any).username,
+              firstName: d.first_name,
+              lastName: d.last_name,
+              username: d.username,
             });
-          } catch (err: any) {
-            log.warn({ message: 'enrichContactFromDialog failed', entity_id: chatId, error: err?.message });
+          } catch (err: unknown) {
+            log.warn({ message: 'enrichContactFromDialog failed', entity_id: chatId, error: err instanceof Error ? err.message : String(err) });
           }
         }
       }
-    } catch (err: any) {
-      log.warn({ message: `refreshChatsFromFolders folder ${folderId} failed`, entity_id: accountId, error: err?.message });
+    } catch (err: unknown) {
+      log.warn({ message: `refreshChatsFromFolders folder ${folderId} failed`, entity_id: accountId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  const pinnedChatIds = allDialogs0.filter((d: any) => d.pinned === true).map((d: any) => String(d.id));
+  const pinnedChatIds = allDialogs0.filter((d) => d.pinned === true).map((d) => String(d.id));
   if (pinnedChatIds.length > 0) {
     try {
       const acc = await pool.query(
@@ -310,8 +348,8 @@ export async function refreshChatsFromFolders(
           log.info({ message: `Synced ${pinnedChatIds.length} pinned chats from Telegram`, entity_id: accountId });
         }
       }
-    } catch (err: any) {
-      log.warn({ message: 'Sync pinned chats from Telegram failed', entity_id: accountId, error: err?.message });
+    } catch (err: unknown) {
+      log.warn({ message: 'Sync pinned chats from Telegram failed', entity_id: accountId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 

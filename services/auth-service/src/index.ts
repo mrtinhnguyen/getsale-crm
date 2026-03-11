@@ -1,5 +1,6 @@
 import cookieParser from 'cookie-parser';
 import { createServiceApp } from '@getsale/service-core';
+import { RedisClient } from '@getsale/utils';
 import { authRouter } from './routes/auth';
 import { organizationRouter } from './routes/organization';
 import { workspacesRouter } from './routes/workspaces';
@@ -15,8 +16,9 @@ async function main() {
 
   ctx.app.use(cookieParser());
 
+  const redis = new RedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
   const { pool, rabbitmq, log } = ctx;
-  const deps = { pool, rabbitmq, log };
+  const deps = { pool, rabbitmq, log, redis };
 
   ctx.mount('/api/auth', authRouter(deps));
   ctx.mount('/api/auth', organizationRouter(deps));

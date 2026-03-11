@@ -38,7 +38,7 @@ export default function RootLayout({
     var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.classList.remove('light', 'dark');
     document.documentElement.classList.add(dark ? 'dark' : 'light');
-  } catch (e) {}
+  } catch (e) { /* theme init best-effort; ignore localStorage/parse errors */ }
 })();
             `,
           }}

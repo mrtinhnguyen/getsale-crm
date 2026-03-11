@@ -27,8 +27,7 @@ declare global {
 const INTERNAL_AUTH_HEADER = 'x-internal-auth';
 
 /** Reject requests that did not come from the gateway (missing or invalid X-Internal-Auth).
- *  When INTERNAL_AUTH_SECRET is set: require either valid X-Internal-Auth header or present X-User-Id + X-Organization-Id (gateway sets these after JWT).
- *  When INTERNAL_AUTH_SECRET is not set: reject with 503 so the service never runs in insecure "trust any headers" mode. */
+ *  Requires valid X-Internal-Auth header matching INTERNAL_AUTH_SECRET. User headers (X-User-Id, X-Organization-Id) are not accepted without the secret to prevent impersonation if backends are exposed. */
 export function internalAuth(): RequestHandler {
   return (req: Request, _res: Response, next: NextFunction) => {
     const secret = process.env.INTERNAL_AUTH_SECRET?.trim();
@@ -37,13 +36,10 @@ export function internalAuth(): RequestHandler {
     }
     const value = req.headers[INTERNAL_AUTH_HEADER];
     const headerOk = typeof value === 'string' && value.trim() === secret;
-    const userId = req.headers['x-user-id'];
-    const orgId = req.headers['x-organization-id'];
-    const hasUserHeaders = typeof userId === 'string' && userId.trim() !== '' && typeof orgId === 'string' && orgId.trim() !== '';
-    if (headerOk || hasUserHeaders) {
-      return next();
+    if (!headerOk) {
+      return next(new AppError(401, 'Unauthorized', ErrorCodes.UNAUTHORIZED));
     }
-    return next(new AppError(401, 'Unauthorized', ErrorCodes.UNAUTHORIZED));
+    return next();
   };
 }
 
@@ -104,6 +100,7 @@ export function requireRole(...roles: string[]): RequestHandler {
 
 // ─── RBAC permission check (DB-backed) ───────────────────────────────────
 
+/** Single source of truth for RBAC: role_permissions table; owner has all; admin has all except transfer_ownership (when DB fails or missing row). */
 export function canPermission(pool: Pool) {
   return async function check(
     role: string,
@@ -119,9 +116,13 @@ export function canPermission(pool: Pool) {
         [roleLower, resource, action]
       );
       if (r.rows.length > 0) return true;
-      return roleLower === 'owner';
+      if (roleLower === 'owner') return true;
+      if (roleLower === 'admin') return action !== 'transfer_ownership';
+      return false;
     } catch {
-      return roleLower === 'owner';
+      if (roleLower === 'owner') return true;
+      if (roleLower === 'admin') return action !== 'transfer_ownership';
+      return false;
     }
   };
 }

@@ -5,7 +5,7 @@ import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
 import { TelegramManager } from '../telegram-manager';
 import { serializeMessage } from '../telegram-serialize';
-import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, requireBidiCanWriteAccount } from '../helpers';
+import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, getAccountOr404, requireBidiCanWriteAccount } from '../helpers';
 
 interface Deps {
   pool: Pool;
@@ -30,14 +30,8 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required field: text or fileBase64', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id, is_demo FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
-    if ((accountResult.rows[0] as { is_demo?: boolean }).is_demo) {
+    const account = await getAccountOr404<{ id: string; is_demo?: boolean }>(pool, id, organizationId, 'id, is_demo');
+    if (account.is_demo) {
       throw new AppError(403, 'Sending messages is disabled for demo accounts. Connect a real Telegram account to send messages.', ErrorCodes.FORBIDDEN);
     }
     await requireBidiCanWriteAccount(pool, id, req.user);
@@ -45,7 +39,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
     }
 
-    let message: any;
+    let message: { id: unknown; date?: unknown };
     if (fileBase64 && typeof fileBase64 === 'string') {
       const buf = Buffer.from(fileBase64, 'base64');
       if (buf.length > MAX_FILE_SIZE_BYTES) {
@@ -85,14 +79,8 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required field: text', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id, is_demo FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
-    if ((accountResult.rows[0] as { is_demo?: boolean }).is_demo) {
+    const account = await getAccountOr404<{ id: string; is_demo?: boolean }>(pool, id, organizationId, 'id, is_demo');
+    if (account.is_demo) {
       throw new AppError(403, 'Sending messages is disabled for demo accounts.', ErrorCodes.FORBIDDEN);
     }
     await requireBidiCanWriteAccount(pool, id, req.user);
@@ -128,13 +116,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required fields: fromChatId, toChatId, telegramMessageId', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
     if (!telegramManager.isConnected(id)) {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
@@ -164,13 +146,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required field: channelId', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
     if (!telegramManager.isConnected(id)) {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
@@ -200,13 +176,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required fields: channelId, telegramMessageId', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
     if (!telegramManager.isConnected(id)) {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
@@ -226,13 +196,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'Missing required field: title', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, organizationId, 'id');
     if (!telegramManager.isConnected(accountId)) {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
     }
@@ -264,13 +228,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       ? reactionBody.map((e) => String(e)).filter(Boolean)
       : [];
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, accountId, req.user);
     if (!telegramManager.isConnected(accountId)) {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
@@ -283,10 +241,11 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
         Number(telegramMessageId),
         reactionList
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as { errorMessage?: string; message?: string };
       const isReactionInvalid =
-        error?.errorMessage === 'REACTION_INVALID' ||
-        error?.message?.includes('REACTION_INVALID');
+        err?.errorMessage === 'REACTION_INVALID' ||
+        (typeof err?.message === 'string' && err.message.includes('REACTION_INVALID'));
       if (isReactionInvalid) {
         log.warn({ message: 'Reaction not applied in Telegram (REACTION_INVALID), local state kept', entity_id: accountId });
         return res.json({ success: true, skipped: 'REACTION_INVALID' });
@@ -302,17 +261,11 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
     const { organizationId } = req.user;
     const { id: accountId, chatId } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id, organization_id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    const account = await getAccountOr404<{ id: string; organization_id: string }>(pool, accountId, organizationId, 'id, organization_id');
 
     const { added, exhausted } = await telegramManager.fetchOlderMessagesFromTelegram(
       accountId,
-      accountResult.rows[0].organization_id,
+      account.organization_id,
       chatId
     );
     res.json({ added, exhausted });

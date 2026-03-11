@@ -17,24 +17,26 @@ import {
   ACCESS_MAX_AGE_SEC,
   REFRESH_MAX_AGE_SEC,
 } from '../cookies';
+import type { RedisClient } from '@getsale/utils';
 
 interface Deps {
   pool: Pool;
   rabbitmq: RabbitMQClient;
   log: Logger;
+  redis: RedisClient;
 }
 
 const REFRESH_RATE_LIMIT = 5;
-const REFRESH_RATE_WINDOW = 60_000;
-const refreshAttempts = new Map<string, { count: number; resetAt: number }>();
+const REFRESH_RATE_WINDOW = 60_000; // 1 min in ms
+const REFRESH_RATE_WINDOW_SEC = Math.ceil(REFRESH_RATE_WINDOW / 1000);
 
 const SIGNIN_RATE_LIMIT = 10;
-const SIGNIN_RATE_WINDOW_MS = 15 * 60 * 1000;
-const signinAttempts = new Map<string, { count: number; resetAt: number }>();
+const SIGNIN_RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
+const SIGNIN_RATE_WINDOW_SEC = Math.ceil(SIGNIN_RATE_WINDOW_MS / 1000);
 
 const SIGNUP_RATE_LIMIT = 5;
-const SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000;
-const signupAttempts = new Map<string, { count: number; resetAt: number }>();
+const SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const SIGNUP_RATE_WINDOW_SEC = Math.ceil(SIGNUP_RATE_WINDOW_MS / 1000);
 
 function getClientIp(req: { ip?: string; headers?: Record<string, string | string[] | undefined> }): string {
   const forwarded = req.headers?.['x-forwarded-for'];
@@ -42,48 +44,44 @@ function getClientIp(req: { ip?: string; headers?: Record<string, string | strin
   return req.ip || 'unknown';
 }
 
-function checkSigninRateLimit(ip: string): void {
-  const now = Date.now();
-  const entry = signinAttempts.get(ip);
-  if (!entry) {
-    signinAttempts.set(ip, { count: 1, resetAt: now + SIGNIN_RATE_WINDOW_MS });
-    return;
-  }
-  if (now > entry.resetAt) {
-    signinAttempts.set(ip, { count: 1, resetAt: now + SIGNIN_RATE_WINDOW_MS });
-    return;
-  }
-  entry.count++;
-  if (entry.count > SIGNIN_RATE_LIMIT) {
+async function checkSigninRateLimit(redis: RedisClient, ip: string): Promise<void> {
+  const slot = Math.floor(Date.now() / SIGNIN_RATE_WINDOW_MS);
+  const key = `auth_rate:signin:${ip}:${slot}`;
+  const count = await redis.incr(key, SIGNIN_RATE_WINDOW_SEC);
+  if (count > SIGNIN_RATE_LIMIT) {
     throw new AppError(429, 'Too many sign-in attempts. Try again later.', ErrorCodes.RATE_LIMITED);
   }
 }
 
-function checkSignupRateLimit(ip: string): void {
-  const now = Date.now();
-  const entry = signupAttempts.get(ip);
-  if (!entry) {
-    signupAttempts.set(ip, { count: 1, resetAt: now + SIGNUP_RATE_WINDOW_MS });
-    return;
-  }
-  if (now > entry.resetAt) {
-    signupAttempts.set(ip, { count: 1, resetAt: now + SIGNUP_RATE_WINDOW_MS });
-    return;
-  }
-  entry.count++;
-  if (entry.count > SIGNUP_RATE_LIMIT) {
+async function checkSignupRateLimit(redis: RedisClient, ip: string): Promise<void> {
+  const slot = Math.floor(Date.now() / SIGNUP_RATE_WINDOW_MS);
+  const key = `auth_rate:signup:${ip}:${slot}`;
+  const count = await redis.incr(key, SIGNUP_RATE_WINDOW_SEC);
+  if (count > SIGNUP_RATE_LIMIT) {
     throw new AppError(429, 'Too many sign-up attempts. Try again later.', ErrorCodes.RATE_LIMITED);
   }
 }
 
-export function authRouter({ pool, rabbitmq, log }: Deps): Router {
+async function checkRefreshRateLimit(redis: RedisClient, clientId: string): Promise<void> {
+  const slot = Math.floor(Date.now() / REFRESH_RATE_WINDOW);
+  const key = `auth_rate:refresh:${clientId}:${slot}`;
+  const count = await redis.incr(key, REFRESH_RATE_WINDOW_SEC);
+  if (count > REFRESH_RATE_LIMIT) {
+    throw new AppError(429, 'Too many refresh attempts', ErrorCodes.RATE_LIMITED);
+  }
+}
+
+export function authRouter({ pool, rabbitmq, log, redis }: Deps): Router {
   const router = Router();
 
   router.post('/signup', asyncHandler(async (req, res) => {
-    checkSignupRateLimit(getClientIp(req));
+    await checkSignupRateLimit(redis, getClientIp(req));
     const { email, password, organizationName, inviteToken } = req.body;
 
     if (!email || !password) throw new AppError(400, 'Email and password required', ErrorCodes.BAD_REQUEST);
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      throw new AppError(400, 'Invalid email format', ErrorCodes.VALIDATION);
+    }
     if (typeof password !== 'string' || password.length < 8) {
       throw new AppError(400, 'Password must be at least 8 characters', ErrorCodes.VALIDATION);
     }
@@ -187,11 +185,14 @@ export function authRouter({ pool, rabbitmq, log }: Deps): Router {
   }));
 
   router.post('/signin', asyncHandler(async (req, res) => {
-    checkSigninRateLimit(getClientIp(req));
+    await checkSigninRateLimit(redis, getClientIp(req));
     const { email, password } = req.body;
     if (!email || !password) throw new AppError(400, 'Email and password required', ErrorCodes.BAD_REQUEST);
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      throw new AppError(400, 'Invalid email format', ErrorCodes.VALIDATION);
+    }
 
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.trim()]);
     if (result.rows.length === 0) throw new AppError(401, 'Invalid credentials', ErrorCodes.UNAUTHORIZED);
 
     const user = result.rows[0];
@@ -265,17 +266,7 @@ export function authRouter({ pool, rabbitmq, log }: Deps): Router {
 
   router.post('/refresh', asyncHandler(async (req, res) => {
     const clientId = req.ip || 'unknown';
-    const now = Date.now();
-
-    const attempt = refreshAttempts.get(clientId);
-    if (attempt && attempt.resetAt > now) {
-      if (attempt.count >= REFRESH_RATE_LIMIT) {
-        throw new AppError(429, 'Too many refresh attempts', ErrorCodes.RATE_LIMITED);
-      }
-      attempt.count++;
-    } else {
-      refreshAttempts.set(clientId, { count: 1, resetAt: now + REFRESH_RATE_WINDOW });
-    }
+    await checkRefreshRateLimit(redis, clientId);
 
     const refreshToken = req.cookies?.[AUTH_COOKIE_REFRESH] || req.body?.refreshToken;
     if (!refreshToken) throw new AppError(400, 'Refresh token required', ErrorCodes.BAD_REQUEST);
@@ -304,7 +295,6 @@ export function authRouter({ pool, rabbitmq, log }: Deps): Router {
     const user = userResult.rows[0];
     const accessToken = signAccessToken({ userId: user.id, organizationId: user.organization_id, role: user.role });
 
-    refreshAttempts.delete(clientId);
     res.cookie(AUTH_COOKIE_ACCESS, accessToken, { ...AUTH_COOKIE_OPTS, maxAge: ACCESS_MAX_AGE_SEC * 1000 });
     res.json({
       user: { id: user.id, email: user.email, organizationId: user.organization_id, role: user.role },

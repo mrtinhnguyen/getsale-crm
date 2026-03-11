@@ -45,7 +45,9 @@ export function RightWorkspacePanel({
     if (typeof window !== 'undefined') {
       try {
         sessionStorage.setItem(STORAGE_TAB_KEY, tab);
-      } catch (_) {}
+      } catch (e) {
+        console.warn('[RightWorkspacePanel] persistTab failed', e);
+      }
     }
   }, []);
 
@@ -147,6 +149,8 @@ export function getPersistedRightPanelTab(): RightPanelTab | null {
   try {
     const t = sessionStorage.getItem(STORAGE_TAB_KEY);
     if (t === 'ai_assistant' || t === 'lead_card') return t;
-  } catch (_) {}
+  } catch (e) {
+    console.warn('[RightWorkspacePanel] getPersistedTab failed', e);
+  }
   return null;
 }

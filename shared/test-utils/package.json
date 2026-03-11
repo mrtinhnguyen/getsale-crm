@@ -4,7 +4,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "echo 'test-utils: source-only package, no build needed'"
+    "build": "echo 'test-utils: source-only package, no build needed'",
+    "typecheck": "echo 'test-utils: no tsconfig, skip'"
   },
   "dependencies": {
     "@getsale/events": "*",

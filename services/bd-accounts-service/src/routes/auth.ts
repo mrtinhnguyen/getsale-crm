@@ -6,7 +6,7 @@ import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
 import { TelegramManager } from '../telegram-manager';
-import { getTelegramApiCredentials, requireAccountOwner, requireBidiOwnAccount } from '../helpers';
+import { getTelegramApiCredentials, getAccountOr404, requireAccountOwner, requireBidiOwnAccount } from '../helpers';
 
 interface Deps {
   pool: Pool;
@@ -138,13 +138,7 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
       throw new AppError(400, 'Missing required fields: accountId, phoneNumber, phoneCode, phoneCodeHash', ErrorCodes.VALIDATION);
     }
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [accountId, organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, accountId, organizationId, 'id');
 
     try {
       const { requiresPassword } = await telegramManager.signIn(
@@ -273,13 +267,7 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
     const user = req.user;
     const { id } = req.params;
 
-    const accountResult = await pool.query(
-      'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
-      [id, user.organizationId]
-    );
-    if (accountResult.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
+    await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
     const isOwner = await requireAccountOwner(pool, id, user);
     const canSettings = await checkPermission(user.role, 'bd_accounts', 'settings');

@@ -323,7 +323,9 @@ export default function ContactDiscoveryPage() {
         const result = await fetchParseResult(parseTaskId);
         setParseResult(result);
         setParseStep(4);
-      } catch (_) {}
+      } catch (e) {
+        console.warn('[discovery] fetchParseResult failed', e);
+      }
     }
   };
 

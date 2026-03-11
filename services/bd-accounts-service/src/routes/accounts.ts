@@ -4,7 +4,7 @@ import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
 import { TelegramManager } from '../telegram-manager';
-import { requireAccountOwner, requireBidiOwnAccount } from '../helpers';
+import { requireAccountOwner, requireBidiOwnAccount, getAccountOr404 } from '../helpers';
 
 interface Deps {
   pool: Pool;
@@ -73,11 +73,12 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       [organizationId]
     );
     const unreadByAccount: Record<string, number> = {};
-    for (const row of unreadResult.rows as any[]) {
+    for (const row of unreadResult.rows as { bd_account_id: string; unread_count: number }[]) {
       unreadByAccount[row.bd_account_id] = Number(row.unread_count) || 0;
     }
 
-    const rows = result.rows.map((r: any) => ({
+    interface ListRow { id: string; owner_id?: string | null; [k: string]: unknown }
+    const rows = result.rows.map((r: ListRow) => ({
       ...r,
       is_owner: r.owner_id != null && r.owner_id === userId,
       unread_count: unreadByAccount[r.id] ?? 0,
@@ -90,18 +91,12 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
     const { id: userId, organizationId } = req.user;
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT id, organization_id, telegram_id, phone_number, is_active, is_demo, connected_at, last_activity,
-              created_at, sync_status, sync_progress_done, sync_progress_total, sync_error,
-              created_by_user_id AS owner_id,
-              first_name, last_name, username, bio, photo_file_id, display_name
-       FROM bd_accounts WHERE id = $1 AND organization_id = $2`,
-      [id, organizationId]
+    const row = await getAccountOr404<Record<string, unknown> & { owner_id?: string }>(
+      pool,
+      id,
+      organizationId,
+      'id, organization_id, telegram_id, phone_number, is_active, is_demo, connected_at, last_activity, created_at, sync_status, sync_progress_done, sync_progress_total, sync_error, created_by_user_id AS owner_id, first_name, last_name, username, bio, photo_file_id, display_name'
     );
-    if (result.rows.length === 0) {
-      throw new AppError(404, 'BD account not found', ErrorCodes.NOT_FOUND);
-    }
-    const row = result.rows[0] as any;
     res.json({
       ...row,
       is_owner: row.owner_id != null && row.owner_id === userId,

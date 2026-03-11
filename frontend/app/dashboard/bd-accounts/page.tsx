@@ -269,7 +269,9 @@ export default function BDAccountsPage() {
           setStartingSync(false);
           setError(d.sync_error);
         }
-      } catch (_) {}
+      } catch (e) {
+        console.warn('[bd-accounts] sync poll error', e);
+      }
     }, 2000);
     return () => clearInterval(t);
   }, [connectingAccountId, syncProgress]);

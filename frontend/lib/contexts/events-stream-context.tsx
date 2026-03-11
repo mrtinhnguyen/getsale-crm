@@ -65,7 +65,9 @@ export function EventsStreamProvider({ children }: { children: React.ReactNode }
                     set.forEach((h) => {
                       try {
                         h(data);
-                      } catch (_) {}
+                      } catch (e) {
+                        console.warn('[EventsStream] handler error', currentEvent, e);
+                      }
                     });
                   }
                   const all = handlersRef.current.get('*');
@@ -73,10 +75,14 @@ export function EventsStreamProvider({ children }: { children: React.ReactNode }
                     all.forEach((h) => {
                       try {
                         h({ ...data, _event: currentEvent });
-                      } catch (_) {}
+                      } catch (e) {
+                        console.warn('[EventsStream] handler error (*)', e);
+                      }
                     });
                   }
-                } catch (_) {}
+                } catch (e) {
+                  console.warn('[EventsStream] parse/process error', e);
+                }
                 currentEvent = 'message';
               }
             }

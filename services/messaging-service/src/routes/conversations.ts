@@ -12,6 +12,26 @@ import {
 } from '@getsale/service-core';
 import { MESSAGES_FOR_AI_LIMIT, AI_INSIGHT_MODEL_VERSION } from '../helpers';
 
+/** Validate conversation_id from body and fetch lead conversation row or throw 400/404. DRY for create-shared-chat, mark-shared-chat, mark-won, mark-lost. */
+async function getLeadConversationOrThrow<T>(
+  pool: Pool,
+  conversationId: string | undefined,
+  organizationId: string,
+  columns: string
+): Promise<T> {
+  if (!conversationId || typeof conversationId !== 'string') {
+    throw new AppError(400, 'conversation_id required', ErrorCodes.VALIDATION);
+  }
+  const r = await pool.query(
+    `SELECT ${columns} FROM conversations WHERE id = $1 AND organization_id = $2 AND lead_id IS NOT NULL`,
+    [conversationId, organizationId]
+  );
+  if (r.rows.length === 0) {
+    throw new AppError(404, 'Conversation not found or not a lead', ErrorCodes.NOT_FOUND);
+  }
+  return r.rows[0] as T;
+}
+
 interface Deps {
   pool: Pool;
   log: Logger;
@@ -432,25 +452,16 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
   router.post('/create-shared-chat', asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { conversation_id: conversationId, title: titleOverride, participant_usernames: participantUsernamesOverride } = req.body ?? {};
-    if (!conversationId || typeof conversationId !== 'string') {
-      throw new AppError(400, 'conversation_id required', ErrorCodes.VALIDATION);
-    }
-
-    const convRow = await pool.query(
-      `SELECT c.id, c.bd_account_id, c.channel_id, c.contact_id, c.shared_chat_created_at,
-              COALESCE(NULLIF(TRIM(c2.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(c2.first_name,''), ' ', COALESCE(c2.last_name,''))), ''), c2.username, c2.telegram_id::text) AS contact_name
-       FROM conversations c
-       LEFT JOIN contacts c2 ON c2.id = c.contact_id
-       WHERE c.id = $1 AND c.organization_id = $2 AND c.lead_id IS NOT NULL`,
-      [conversationId, organizationId]
-    );
-    if (convRow.rows.length === 0) {
-      throw new AppError(404, 'Conversation not found or not a lead', ErrorCodes.NOT_FOUND);
-    }
-    const conv = convRow.rows[0] as {
-      id: string; bd_account_id: string; channel_id: string; contact_id: string | null;
-      shared_chat_created_at: unknown; contact_name: string | null;
-    };
+    const conv = await getLeadConversationOrThrow<{
+      id: string; bd_account_id: string | null; channel_id: string; contact_id: string | null;
+      shared_chat_created_at: Date | null;
+    }>(pool, conversationId, organizationId, 'id, bd_account_id, channel_id, contact_id, shared_chat_created_at');
+    const contactName = conv.contact_id
+      ? (await pool.query(
+          `SELECT COALESCE(NULLIF(TRIM(display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(first_name,''), ' ', COALESCE(last_name,''))), ''), username, telegram_id::text) AS contact_name FROM contacts WHERE id = $1 AND organization_id = $2`,
+          [conv.contact_id, organizationId]
+        )).rows[0]?.contact_name ?? null
+      : null;
     if (conv.shared_chat_created_at != null) {
       conflicts409Total.inc({ endpoint: 'create-shared-chat' });
       log.warn({ message: 'conflict_409 create-shared-chat already created', correlation_id: req.correlationId, endpoint: 'POST /create-shared-chat', conversationId, event: 'conflict_409' });
@@ -470,7 +481,7 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
       );
       const v = settingsRow.rows[0]?.value as Record<string, unknown> | undefined;
       const template = typeof v?.titleTemplate === 'string' ? v.titleTemplate : 'Чат: {{contact_name}}';
-      title = template.replace(/\{\{\s*contact_name\s*\}\}/gi, (conv.contact_name ?? 'Контакт').trim()).trim().slice(0, 255) || 'Общий чат';
+      title = template.replace(/\{\{\s*contact_name\s*\}\}/gi, (contactName ?? 'Контакт').trim()).trim().slice(0, 255) || 'Общий чат';
     }
 
     let extraUsernames: string[];
@@ -579,27 +590,19 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
   router.post('/mark-shared-chat', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { conversation_id: conversationId } = req.body ?? {};
-    if (!conversationId || typeof conversationId !== 'string') {
-      throw new AppError(400, 'conversation_id required', ErrorCodes.VALIDATION);
-    }
-    const check = await pool.query(
-      `SELECT id, shared_chat_created_at FROM conversations WHERE id = $1 AND organization_id = $2 AND lead_id IS NOT NULL`,
-      [conversationId, organizationId]
+    const existing = await getLeadConversationOrThrow<{ id: string; shared_chat_created_at: Date | null }>(
+      pool, conversationId, organizationId, 'id, shared_chat_created_at'
     );
-    if (check.rows.length === 0) {
-      throw new AppError(404, 'Conversation not found or not a lead', ErrorCodes.NOT_FOUND);
-    }
-    const existing = check.rows[0] as { id: string; shared_chat_created_at: Date | null };
     if (existing.shared_chat_created_at != null) {
       conflicts409Total.inc({ endpoint: 'mark-shared-chat' });
-      log.warn({ message: 'conflict_409 mark-shared-chat already created', correlation_id: req.correlationId, endpoint: 'POST /mark-shared-chat', conversationId, event: 'conflict_409' });
+      log.warn({ message: 'conflict_409 mark-shared-chat already created', correlation_id: req.correlationId, endpoint: 'POST /mark-shared-chat', conversationId: existing.id, event: 'conflict_409' });
       throw new AppError(409, 'Shared chat already created for this conversation', ErrorCodes.CONFLICT);
     }
     const r = await pool.query(
       `UPDATE conversations SET shared_chat_created_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND organization_id = $2 AND lead_id IS NOT NULL
        RETURNING id, shared_chat_created_at`,
-      [conversationId, organizationId]
+      [existing.id, organizationId]
     );
     const row = r.rows[0] as { id: string; shared_chat_created_at: Date };
     res.json({
@@ -615,9 +618,6 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
   router.post('/mark-won', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { conversation_id: conversationId, revenue_amount: revenueAmountRaw } = req.body ?? {};
-    if (!conversationId || typeof conversationId !== 'string') {
-      throw new AppError(400, 'conversation_id required', ErrorCodes.VALIDATION);
-    }
     const revenueAmount = revenueAmountRaw != null ? parseFloat(String(revenueAmountRaw)) : null;
     if (revenueAmount != null && (Number.isNaN(revenueAmount) || revenueAmount < 0)) {
       throw new AppError(400, 'revenue_amount must be a non-negative number', ErrorCodes.VALIDATION);
@@ -625,19 +625,10 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
     if (revenueAmount != null && revenueAmount > REVENUE_AMOUNT_MAX) {
       throw new AppError(400, `revenue_amount must not exceed ${REVENUE_AMOUNT_MAX}`, ErrorCodes.VALIDATION);
     }
-
-    const check = await pool.query(
-      `SELECT id, bd_account_id, channel_id, contact_id, shared_chat_created_at, won_at, lost_at
-       FROM conversations WHERE id = $1 AND organization_id = $2 AND lead_id IS NOT NULL`,
-      [conversationId, organizationId]
-    );
-    if (check.rows.length === 0) {
-      throw new AppError(404, 'Conversation not found or not a lead', ErrorCodes.NOT_FOUND);
-    }
-    const c = check.rows[0] as {
+    const c = await getLeadConversationOrThrow<{
       id: string; bd_account_id: string; channel_id: string; contact_id: string | null;
       shared_chat_created_at: Date | null; won_at: Date | null; lost_at: Date | null;
-    };
+    }>(pool, conversationId, organizationId, 'id, bd_account_id, channel_id, contact_id, shared_chat_created_at, won_at, lost_at');
     if (c.won_at != null) {
       conflicts409Total.inc({ endpoint: 'mark-won' });
       log.warn({ message: 'conflict_409 mark-won already won', correlation_id: req.correlationId, endpoint: 'POST /mark-won', conversationId, event: 'conflict_409' });
@@ -699,22 +690,10 @@ export function conversationsRouter({ pool, log, bdAccountsClient, aiClient, reg
   router.post('/mark-lost', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { conversation_id: conversationId, reason } = req.body ?? {};
-    if (!conversationId || typeof conversationId !== 'string') {
-      throw new AppError(400, 'conversation_id required', ErrorCodes.VALIDATION);
-    }
-
-    const check = await pool.query(
-      `SELECT id, bd_account_id, channel_id, contact_id, won_at, lost_at
-       FROM conversations WHERE id = $1 AND organization_id = $2 AND lead_id IS NOT NULL`,
-      [conversationId, organizationId]
-    );
-    if (check.rows.length === 0) {
-      throw new AppError(404, 'Conversation not found or not a lead', ErrorCodes.NOT_FOUND);
-    }
-    const c = check.rows[0] as {
+    const c = await getLeadConversationOrThrow<{
       id: string; bd_account_id: string; channel_id: string;
       contact_id: string | null; won_at: Date | null; lost_at: Date | null;
-    };
+    }>(pool, conversationId, organizationId, 'id, bd_account_id, channel_id, contact_id, won_at, lost_at');
     if (c.won_at != null) {
       conflicts409Total.inc({ endpoint: 'mark-lost' });
       log.warn({ message: 'conflict_409 mark-lost already won', correlation_id: req.correlationId, endpoint: 'POST /mark-lost', conversationId, event: 'conflict_409' });

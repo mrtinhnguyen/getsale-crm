@@ -14,8 +14,9 @@ type PeriodKey = 'today' | 'week' | 'month' | 'year';
 interface Summary {
   total_pipeline_value: number;
   revenue_in_period: number;
-  deals_closed_in_period: number;
+  leads_closed_in_period: number;
   participants_count: number;
+  leads_created_in_period?: number;
   start_date: string;
   end_date: string;
 }
@@ -24,9 +25,9 @@ interface TeamMemberRow {
   user_id: string;
   user_email: string;
   user_display_name: string;
-  deals_closed: number;
+  leads_closed: number;
   revenue: string;
-  avg_deal_value: string | null;
+  avg_lead_value: string | null;
   avg_days_to_close: string | null;
 }
 
@@ -39,7 +40,7 @@ export default function AnalyticsPage() {
   const [pipelineValue, setPipelineValue] = useState<any[]>([]);
   const [teamPerformance, setTeamPerformance] = useState<TeamMemberRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sortBy, setSortBy] = useState<'revenue' | 'deals_closed' | 'avg_deal_value'>('revenue');
+  const [sortBy, setSortBy] = useState<'revenue' | 'leads_closed' | 'avg_lead_value'>('revenue');
 
   const fetchAnalytics = useCallback(async () => {
     setLoading(true);
@@ -72,7 +73,7 @@ export default function AnalyticsPage() {
   }
 
   const totalValue = pipelineValue.reduce((sum, stage) => sum + (parseFloat(stage.total_value) || 0), 0);
-  const hasNoData = pipelineValue.length === 0 && (!summary || (summary.revenue_in_period === 0 && summary.deals_closed_in_period === 0));
+  const hasNoData = pipelineValue.length === 0 && (!summary || (summary.revenue_in_period === 0 && summary.leads_closed_in_period === 0));
 
   if (hasNoData && teamPerformance.length === 0) {
     return (
@@ -106,16 +107,17 @@ export default function AnalyticsPage() {
 
   const totalPipelineValue = summary?.total_pipeline_value ?? totalValue;
   const revenueInPeriod = summary?.revenue_in_period ?? 0;
-  const dealsClosedInPeriod = summary?.deals_closed_in_period ?? 0;
+  const leadsClosedInPeriod = summary?.leads_closed_in_period ?? 0;
+  const leadsCreatedInPeriod = summary?.leads_created_in_period ?? 0;
   const participantsCount = summary?.participants_count ?? teamPerformance.length;
 
   const totalRevenue = teamPerformance.reduce((s, m) => s + parseFloat(m.revenue || '0'), 0);
   const sortedTeam = [...teamPerformance].sort((a, b) => {
     switch (sortBy) {
-      case 'deals_closed':
-        return (b.deals_closed ?? 0) - (a.deals_closed ?? 0);
-      case 'avg_deal_value':
-        return (parseFloat(b.avg_deal_value || '0') || 0) - (parseFloat(a.avg_deal_value || '0') || 0);
+      case 'leads_closed':
+        return (b.leads_closed ?? 0) - (a.leads_closed ?? 0);
+      case 'avg_lead_value':
+        return (parseFloat(b.avg_lead_value || '0') || 0) - (parseFloat(a.avg_lead_value || '0') || 0);
       default:
         return parseFloat(b.revenue || '0') - parseFloat(a.revenue || '0');
     }
@@ -124,7 +126,8 @@ export default function AnalyticsPage() {
   const statCards = [
     { key: 'totalValue', value: `$${totalPipelineValue.toLocaleString()}`, icon: DollarSign },
     { key: 'revenueInPeriod', value: `$${revenueInPeriod.toLocaleString()}`, icon: DollarSign },
-    { key: 'dealsClosedInPeriod', value: String(dealsClosedInPeriod), icon: TrendingUp },
+    { key: 'leadsClosedInPeriod', value: String(leadsClosedInPeriod), icon: TrendingUp },
+    { key: 'leadsCreatedInPeriod', value: String(leadsCreatedInPeriod), icon: TrendingUp },
     { key: 'participants', value: String(participantsCount), icon: Users },
   ];
 
@@ -155,7 +158,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
         {statCards.map((stat) => {
           const Icon = stat.icon;
           return (
@@ -193,7 +196,7 @@ export default function AnalyticsPage() {
                 />
               </div>
               <div className="flex items-center justify-between mt-1 text-xs text-muted-foreground">
-                <span>{t('analytics.dealsCount', { count: stage.deal_count })}</span>
+                <span>{t('analytics.leadsCount', { count: stage.lead_count ?? stage.deal_count ?? 0 })}</span>
                 <span>{t('analytics.average')}: ${(parseFloat(stage.avg_value) || 0).toLocaleString()}</span>
               </div>
             </div>
@@ -214,9 +217,9 @@ export default function AnalyticsPage() {
                 </th>
                 <th
                   className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground"
-                  onClick={() => setSortBy('deals_closed')}
+                  onClick={() => setSortBy('leads_closed')}
                 >
-                  {t('analytics.dealsClosed')}
+                  {t('analytics.leadsClosed')}
                 </th>
                 <th
                   className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground"
@@ -226,9 +229,9 @@ export default function AnalyticsPage() {
                 </th>
                 <th
                   className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground"
-                  onClick={() => setSortBy('avg_deal_value')}
+                  onClick={() => setSortBy('avg_lead_value')}
                 >
-                  {t('analytics.avgDeal')}
+                  {t('analytics.avgLead')}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   {t('analytics.avgTime')}
@@ -247,13 +250,13 @@ export default function AnalyticsPage() {
                     <td className="px-4 py-3 text-sm font-medium text-foreground">
                       {member.user_display_name || member.user_email || member.user_id}
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">{member.deals_closed}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{member.leads_closed}</td>
                     <td className="px-4 py-3 text-sm font-medium text-foreground">
                       ${rev.toLocaleString()}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {member.avg_deal_value != null
-                        ? `$${parseFloat(member.avg_deal_value).toLocaleString()}`
+                      {member.avg_lead_value != null
+                        ? `$${parseFloat(member.avg_lead_value).toLocaleString()}`
                         : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

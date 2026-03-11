@@ -41,43 +41,59 @@ export function analyticsRouter({ pool, log }: Deps): Router {
 
   router.use(requireUser());
 
-  // Summary for cards (total pipeline value, revenue in period, deals closed in period, participants count)
+  // Summary for cards (leads-based: total value, revenue in period, leads closed in period, participants, leads created)
   router.get('/summary', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const period = (req.query.period as PeriodKey) || 'month';
     const { startDate, endDate } = getPeriodBounds(period);
 
-    const closedStageSubquery = `SELECT id FROM stages WHERE name = 'closed' OR name = 'won'`;
+    // Match default pipeline stage names: "Closed Won", "Closed Lost" (see auth-service signup, pipeline-service defaults)
+    const closedIdsRes = await pool.query(
+      `SELECT id FROM stages WHERE organization_id = $1 AND name IN ('Closed Won', 'Closed Lost')`,
+      [organizationId]
+    );
+    const closedIds = (closedIdsRes.rows as { id: string }[]).map((r) => r.id);
+    const closedPlaceholders = closedIds.length ? closedIds.map((_, i) => `$${i + 2}`).join(',') : 'NULL';
 
-    const [totalRes, periodRes] = await Promise.all([
+    const [totalRes, periodRes, createdRes] = await Promise.all([
       pool.query(
-        `SELECT COALESCE(SUM(d.value), 0) as total_pipeline_value
-         FROM deals d
-         WHERE d.organization_id = $1`,
+        `SELECT COALESCE(SUM(l.revenue_amount), 0) as total_pipeline_value
+         FROM leads l
+         WHERE l.organization_id = $1`,
         [organizationId]
       ),
+      closedIds.length
+        ? pool.query(
+            `SELECT
+               COALESCE(SUM(l.revenue_amount), 0) as revenue_in_period,
+               COUNT(DISTINCT l.id)::int as leads_closed_in_period,
+               COUNT(DISTINCT l.responsible_id) FILTER (WHERE l.responsible_id IS NOT NULL)::int as participants_count
+             FROM leads l
+             WHERE l.organization_id = $1 AND l.stage_id IN (${closedPlaceholders})
+               AND l.updated_at >= $${closedIds.length + 2} AND l.updated_at <= $${closedIds.length + 3}`,
+            [organizationId, ...closedIds, startDate, endDate]
+          )
+        : Promise.resolve({ rows: [{ revenue_in_period: 0, leads_closed_in_period: 0, participants_count: 0 }] }),
       pool.query(
-        `SELECT
-           COALESCE(SUM(d.value), 0) as revenue_in_period,
-           COUNT(DISTINCT d.id)::int as deals_closed_in_period,
-           COUNT(DISTINCT d.owner_id)::int as participants_count
-         FROM deals d
-         WHERE d.organization_id = $1 AND d.stage_id IN (${closedStageSubquery})
-           AND d.updated_at >= $2 AND d.updated_at <= $3`,
+        `SELECT COUNT(DISTINCT l.id)::int as leads_created_in_period
+         FROM leads l
+         WHERE l.organization_id = $1 AND l.created_at >= $2 AND l.created_at <= $3`,
         [organizationId, startDate, endDate]
       ),
     ]);
 
     const totalPipelineValue = parseFloat(totalRes.rows[0]?.total_pipeline_value ?? 0);
     const revenueInPeriod = parseFloat(periodRes.rows[0]?.revenue_in_period ?? 0);
-    const dealsClosedInPeriod = Number(periodRes.rows[0]?.deals_closed_in_period ?? 0);
+    const leadsClosedInPeriod = Number(periodRes.rows[0]?.leads_closed_in_period ?? 0);
     const participantsCount = Number(periodRes.rows[0]?.participants_count ?? 0);
+    const leadsCreatedInPeriod = Number(createdRes.rows[0]?.leads_created_in_period ?? 0);
 
     res.json({
       total_pipeline_value: totalPipelineValue,
       revenue_in_period: revenueInPeriod,
-      deals_closed_in_period: dealsClosedInPeriod,
+      leads_closed_in_period: leadsClosedInPeriod,
       participants_count: participantsCount,
+      leads_created_in_period: leadsCreatedInPeriod,
       start_date: startDate,
       end_date: endDate,
     });
@@ -104,7 +120,7 @@ export function analyticsRouter({ pool, log }: Deps): Router {
         FROM stage_history sh
         LEFT JOIN stages fs ON sh.from_stage_id = fs.id
         LEFT JOIN stages ts ON sh.to_stage_id = ts.id
-        WHERE sh.organization_id = $1
+        WHERE sh.organization_id = $1 AND sh.entity_type = 'lead'
     `;
     const params: unknown[] = [organizationId];
 
@@ -144,19 +160,19 @@ export function analyticsRouter({ pool, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  // Pipeline value
+  // Pipeline value (by leads per stage)
   router.get('/pipeline-value', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
 
     const result = await pool.query(
       `SELECT 
         s.name as stage_name,
-        COUNT(d.id) as deal_count,
-        SUM(d.value) as total_value,
-        AVG(d.value) as avg_value
-       FROM deals d
-       JOIN stages s ON d.stage_id = s.id
-       WHERE d.organization_id = $1
+        COUNT(l.id) as lead_count,
+        COALESCE(SUM(l.revenue_amount), 0) as total_value,
+        COALESCE(AVG(l.revenue_amount), 0) as avg_value
+       FROM leads l
+       JOIN stages s ON l.stage_id = s.id
+       WHERE l.organization_id = $1
        GROUP BY s.id, s.name, s.order_index
        ORDER BY s.order_index`,
       [organizationId]
@@ -165,7 +181,7 @@ export function analyticsRouter({ pool, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  // Team performance (with display names and avg deal value)
+  // Team performance (leads in closed/won, with display names and avg lead value)
   router.get('/team-performance', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     let { startDate, endDate } = req.query;
@@ -176,33 +192,39 @@ export function analyticsRouter({ pool, log }: Deps): Router {
       endDate = bounds.endDate;
     }
 
+    // Match default pipeline stage names: "Closed Won", "Closed Lost"
+    const closedIdsRes = await pool.query(
+      `SELECT id FROM stages WHERE organization_id = $1 AND name IN ('Closed Won', 'Closed Lost')`,
+      [organizationId]
+    );
+    const closedIds = (closedIdsRes.rows as { id: string }[]).map((r) => r.id);
+    const closedPlaceholders = closedIds.length ? closedIds.map((_, i) => `$${i + 2}`).join(',') : 'NULL';
+
     let query = `
       SELECT 
         u.id as user_id,
         u.email as user_email,
         up.first_name,
         up.last_name,
-        COUNT(DISTINCT d.id) as deals_closed,
-        SUM(d.value) as revenue,
-        AVG(d.value) as avg_deal_value,
-        AVG(EXTRACT(EPOCH FROM (d.updated_at - d.created_at)) / 86400) as avg_days_to_close
-      FROM deals d
-      JOIN users u ON d.owner_id = u.id
-      LEFT JOIN user_profiles up ON up.user_id = u.id AND up.organization_id = d.organization_id
-      WHERE d.organization_id = $1 AND d.stage_id IN (
-        SELECT id FROM stages WHERE name = 'closed' OR name = 'won'
-      )
+        COUNT(DISTINCT l.id) as leads_closed,
+        COALESCE(SUM(l.revenue_amount), 0) as revenue,
+        COALESCE(AVG(l.revenue_amount), 0) as avg_lead_value,
+        AVG(EXTRACT(EPOCH FROM (l.updated_at - l.created_at)) / 86400) as avg_days_to_close
+      FROM leads l
+      JOIN users u ON l.responsible_id = u.id
+      LEFT JOIN user_profiles up ON up.user_id = u.id AND up.organization_id = l.organization_id
+      WHERE l.organization_id = $1 AND l.stage_id IN (${closedPlaceholders})
     `;
-    const params: unknown[] = [organizationId];
+    const params: unknown[] = [organizationId, ...closedIds];
 
     if (startDate && typeof startDate === 'string') {
       params.push(startDate);
-      query += ` AND d.updated_at >= $${params.length}`;
+      query += ` AND l.updated_at >= $${params.length}`;
     }
 
     if (endDate && typeof endDate === 'string') {
       params.push(endDate);
-      query += ` AND d.updated_at <= $${params.length}`;
+      query += ` AND l.updated_at <= $${params.length}`;
     }
 
     query += ' GROUP BY u.id, u.email, up.first_name, up.last_name';
