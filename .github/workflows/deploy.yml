@@ -8,6 +8,7 @@ on:
 
 env:
   REGISTRY: registry.digitalocean.com/regestry-getsale-ai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # Backend services in parallel (matrix)
