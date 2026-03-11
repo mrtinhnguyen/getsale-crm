@@ -134,7 +134,7 @@ export class TelegramManager {
 
   /** Интервалы вызова updates.GetState() для поддержания потока апдейтов (Telegram перестаёт слать, если нет активности). */
   private updateKeepaliveIntervals: Map<string, NodeJS.Timeout> = new Map();
-  private readonly UPDATE_KEEPALIVE_MS = 2 * 60 * 1000; // 2 минуты — чаще пинг, меньше TIMEOUT в update loop
+  private readonly UPDATE_KEEPALIVE_MS = 60 * 1000; // 1 минута — чаще пинг, меньше TIMEOUT в update loop (см. план TIMEOUT)
 
   /** Кэш GetDialogFilters по аккаунту (один запрос на getDialogFilters/getDialogFilterRaw/getDialogFilterPeerIds). */
   private dialogFiltersCache: Map<string, { ts: number; filters: any[] }> = new Map();
@@ -751,6 +751,16 @@ export class TelegramManager {
       // Connect client first
       await client.connect();
       this.log.info({ message: `Connected account ${accountId} (${phoneNumber})` });
+
+      // Catch GramJS update-loop errors (e.g. TIMEOUT) so they don't become unhandledRejection
+      (client as any)._errorHandler = async (err: any) => {
+        if (err?.message === 'TIMEOUT' || err?.message?.includes?.('TIMEOUT')) {
+          this.log.warn({ message: 'Update loop TIMEOUT (GramJS), scheduling reconnect', accountId });
+          this.scheduleReconnectAllAfterTimeout();
+        } else {
+          this.log.error({ message: 'Telegram client error', accountId, error: err?.message || String(err) });
+        }
+      };
 
       // Wait for connection to stabilize before setting up handlers
       // This helps avoid builder.resolve errors during initialization

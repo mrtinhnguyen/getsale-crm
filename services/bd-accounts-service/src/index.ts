@@ -22,10 +22,10 @@ async function main() {
         reason?.stack?.includes('builder.resolve')) {
       return;
     }
-    if (reason?.message === 'TIMEOUT') {
+    if (reason?.message === 'TIMEOUT' || reason?.message?.includes?.('TIMEOUT')) {
       if (reason?.stack?.includes('updates.js')) {
         telegramManager.scheduleReconnectAllAfterTimeout();
-        log.info({ message: 'Update loop TIMEOUT handled — reconnecting clients' });
+        log.warn({ message: 'Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection' });
       }
       return;
     }
@@ -38,8 +38,9 @@ async function main() {
         error.stack?.includes('builder.resolve')) {
       return;
     }
-    if (error.message === 'TIMEOUT') {
+    if (error.message === 'TIMEOUT' || error.message?.includes?.('TIMEOUT')) {
       telegramManager.scheduleReconnectAllAfterTimeout();
+      log.warn({ message: 'Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection' });
       return;
     }
     log.error({ message: 'Uncaught exception', error: error.message, stack: error.stack });

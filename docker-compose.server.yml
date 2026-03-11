@@ -23,6 +23,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./.data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # доступ с хоста на 5433 (5432 занят другим проектом)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
