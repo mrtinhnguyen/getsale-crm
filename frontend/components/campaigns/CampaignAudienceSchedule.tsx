@@ -160,11 +160,13 @@ export function CampaignAudienceSchedule({
     audienceSource?: AudienceSource;
     bdAccountId?: string;
     enrichContactsBeforeStart?: boolean;
+    sendDelaySeconds?: number;
   } & LeadOverrides) => {
     const ids = overrides?.contactIds ?? contactIds;
     const src = overrides?.audienceSource ?? audienceSource;
     const bdId = overrides?.bdAccountId ?? bdAccountId;
     const enrich = overrides?.enrichContactsBeforeStart ?? enrichContactsBeforeStart;
+    const delay = overrides?.sendDelaySeconds ?? sendDelaySeconds;
     const trigger = overrides?.leadTrigger ?? leadTrigger;
     const pipeline = overrides?.leadPipelineId ?? leadPipelineId;
     const stage = overrides?.leadStageId ?? leadStageId;
@@ -181,7 +183,7 @@ export function CampaignAudienceSchedule({
           limit: 10000,
           contactIds: ids.length > 0 ? ids : undefined,
           bdAccountId: bdId || undefined,
-          sendDelaySeconds: Math.max(0, Math.min(3600, sendDelaySeconds)),
+          sendDelaySeconds: Math.max(0, Math.min(3600, delay)),
           enrichContactsBeforeStart: enrich,
         },
         schedule: null,

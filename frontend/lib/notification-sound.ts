@@ -1,4 +1,4 @@
-const NOTIFICATION_SOUND_PATH = '/notification.mp3';
+const NOTIFICATION_SOUND_PATH = '/notification.wav';
 
 /** Короткий звук уведомления (Web Audio API) */
 function playBeepNotification(): void {
