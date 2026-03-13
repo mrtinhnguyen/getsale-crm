@@ -16,6 +16,7 @@ export interface CampaignLoopDeps {
   log: Logger;
   messagingClient: ServiceHttpClient;
   pipelineClient: ServiceHttpClient;
+  bdAccountsClient: ServiceHttpClient;
 }
 
 export function startCampaignLoop(deps: CampaignLoopDeps): void {
@@ -23,8 +24,35 @@ export function startCampaignLoop(deps: CampaignLoopDeps): void {
   setInterval(() => processCampaignSends(deps), CAMPAIGN_SEND_INTERVAL_MS);
 }
 
+async function simulateHumanBehavior(
+  bdAccountsClient: ServiceHttpClient,
+  bdAccountId: string,
+  channelId: string,
+  messageLength: number,
+  organizationId: string,
+  log: Logger
+): Promise<void> {
+  try {
+    await bdAccountsClient.post('/api/bd-accounts/' + bdAccountId + '/read', { chatId: channelId }, undefined, { organizationId });
+  } catch (e) {
+    log.warn({ message: 'Human sim: markAsRead failed', bdAccountId, error: e instanceof Error ? e.message : String(e) });
+  }
+
+  const readDelay = 1000 + Math.floor(Math.random() * 2000);
+  await new Promise((r) => setTimeout(r, readDelay));
+
+  try {
+    await bdAccountsClient.post('/api/bd-accounts/' + bdAccountId + '/typing', { chatId: channelId }, undefined, { organizationId });
+  } catch (e) {
+    log.warn({ message: 'Human sim: setTyping failed', bdAccountId, error: e instanceof Error ? e.message : String(e) });
+  }
+
+  const typingDelay = Math.min(12000, Math.max(3000, messageLength * 40 + Math.floor(Math.random() * 2000)));
+  await new Promise((r) => setTimeout(r, typingDelay));
+}
+
 async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
-  const { pool, log, messagingClient, pipelineClient } = deps;
+  const { pool, log, messagingClient, pipelineClient, bdAccountsClient } = deps;
 
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -180,32 +208,46 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
         const systemUserId = userRow.rows[0]?.id || '';
         const content = substituteVariables(step.content || '', contact, company);
 
+        await simulateHumanBehavior(bdAccountsClient, row.bd_account_id, row.channel_id, content.length, row.organization_id, log);
+
         let msgJson: { id?: string } | null = null;
-        try {
-          msgJson = await messagingClient.post<{ id?: string }>('/api/messaging/send', {
-            contactId: row.contact_id,
-            channel: 'telegram',
-            channelId: row.channel_id,
-            content,
-            bdAccountId: row.bd_account_id,
-          }, undefined, { userId: systemUserId, organizationId: row.organization_id });
-        } catch (sendErr) {
-          await client.query(
-            `UPDATE campaign_participants SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
-            [JSON.stringify({ lastError: sendErr instanceof Error ? sendErr.message : String(sendErr) }), row.participant_id]
-          );
-          await client.query('COMMIT');
-          continue;
+        const SEND_MAX_RETRIES = 3;
+        for (let attempt = 1; attempt <= SEND_MAX_RETRIES; attempt++) {
+          try {
+            msgJson = await messagingClient.post<{ id?: string }>('/api/messaging/send', {
+              contactId: row.contact_id,
+              channel: 'telegram',
+              channelId: row.channel_id,
+              content,
+              bdAccountId: row.bd_account_id,
+              source: 'campaign',
+            }, undefined, { userId: systemUserId, organizationId: row.organization_id });
+            break;
+          } catch (sendErr) {
+            if (attempt >= SEND_MAX_RETRIES) {
+              await client.query(
+                `UPDATE campaign_participants SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
+                [JSON.stringify({ lastError: sendErr instanceof Error ? sendErr.message : String(sendErr), attempts: attempt }), row.participant_id]
+              );
+              await client.query('COMMIT');
+              log.warn({ message: 'Campaign send failed after retries', participantId: row.participant_id, attempts: attempt, error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
+            } else {
+              const backoff = attempt * 2000;
+              log.info({ message: 'Campaign send retry', participantId: row.participant_id, attempt, backoffMs: backoff });
+              await new Promise((r) => setTimeout(r, backoff));
+            }
+          }
         }
+        if (!msgJson) continue;
 
         const nextStep = steps[row.current_step + 1];
         const now = new Date();
         if (nextStep) {
-          const triggerType = (step as { trigger_type?: string }).trigger_type || 'delay';
+          const nextTriggerType = (nextStep as { trigger_type?: string }).trigger_type || 'delay';
           const nextSendAt =
-            triggerType === 'after_reply'
+            nextTriggerType === 'after_reply'
               ? null
-              : nextSendAtWithSchedule(now, delayHoursFromStep(step), schedule);
+              : nextSendAtWithSchedule(now, delayHoursFromStep(nextStep), schedule);
           await client.query(
             `UPDATE campaign_participants SET current_step = $1, status = 'sent', next_send_at = $2, updated_at = NOW() WHERE id = $3`,
             [row.current_step + 1, nextSendAt, row.participant_id]

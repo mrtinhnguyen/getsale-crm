@@ -26,6 +26,12 @@ async function main() {
     retries: 0,
   }, log);
 
+  const bdAccountsClient = new ServiceHttpClient({
+    baseUrl: process.env.BD_ACCOUNTS_SERVICE_URL || 'http://localhost:3007',
+    name: 'bd-accounts-service',
+    retries: 0,
+  }, log);
+
   try {
     await subscribeToEvents({ pool, rabbitmq, log, pipelineClient });
   } catch (error) {
@@ -35,7 +41,7 @@ async function main() {
     });
   }
 
-  startCampaignLoop({ pool, log, messagingClient, pipelineClient });
+  startCampaignLoop({ pool, log, messagingClient, pipelineClient, bdAccountsClient });
 
   const routeDeps = { pool, rabbitmq, log };
 

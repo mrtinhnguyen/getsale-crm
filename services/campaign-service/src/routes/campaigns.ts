@@ -20,21 +20,49 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
 
   router.get('/', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    const { status } = req.query;
-    let query = 'SELECT * FROM campaigns WHERE organization_id = $1';
-    const params: string[] = [organizationId];
+    const { status, page: pageRaw, limit: limitRaw } = req.query;
+
+    const page = Math.max(1, parseInt(String(pageRaw || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(limitRaw || '20'), 10) || 20));
+    const offset = (page - 1) * limit;
+
+    let whereClause = 'WHERE c.organization_id = $1';
+    const params: (string | number)[] = [organizationId];
     if (status && typeof status === 'string') {
-      query += ' AND status = $2';
       params.push(status);
+      whereClause += ` AND c.status = $${params.length}`;
     }
-    query += ' ORDER BY created_at DESC';
-    const result = await pool.query(query, params);
-    const campaigns = result.rows as { id: string }[];
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM campaigns c ${whereClause}`,
+      params
+    );
+    const totalCount = (countRes.rows[0] as { total: number }).total;
+
+    params.push(limit, offset);
+    const result = await pool.query(
+      `SELECT c.*,
+              u.email AS owner_email,
+              COALESCE(NULLIF(TRIM(CONCAT_WS(' ', up.first_name, up.last_name)), ''), u.email) AS owner_name,
+              (SELECT COUNT(*)::int FROM campaign_participants cp2 WHERE cp2.campaign_id = c.id) AS total_participants
+       FROM campaigns c
+       LEFT JOIN users u ON u.id = c.created_by_user_id
+       LEFT JOIN user_profiles up ON up.user_id = u.id
+       ${whereClause}
+       ORDER BY c.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+    const campaigns = result.rows as { id: string; target_audience?: { bdAccountId?: string } }[];
+
     if (campaigns.length === 0) {
-      return res.json([]);
+      return res.json({ data: [], total: totalCount, page, limit, summary: { total_sent: 0, total_replied: 0, total_won: 0 } });
     }
+
     const ids = campaigns.map((c) => c.id);
-    const [sentRes, repliedRes, sharedRes, readRes, wonRes, revenueRes] = await Promise.all([
+    const bdAccountIds = [...new Set(campaigns.map((c) => c.target_audience?.bdAccountId).filter(Boolean))] as string[];
+
+    const [sentRes, repliedRes, sharedRes, readRes, wonRes, revenueRes, bdAccountsRes] = await Promise.all([
       pool.query(
         `SELECT cp.campaign_id, COUNT(DISTINCT cp.id)::int AS cnt
          FROM campaign_sends cs JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
@@ -62,29 +90,70 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       ),
       pool.query(`SELECT campaign_id, COUNT(*)::int AS cnt FROM conversations WHERE campaign_id = ANY($1::uuid[]) AND won_at IS NOT NULL GROUP BY campaign_id`, [ids]),
       pool.query(`SELECT campaign_id, COALESCE(SUM(revenue_amount), 0)::numeric AS total FROM conversations WHERE campaign_id = ANY($1::uuid[]) AND won_at IS NOT NULL GROUP BY campaign_id`, [ids]),
+      bdAccountIds.length > 0
+        ? pool.query(
+            `SELECT id, display_name, first_name, last_name, username, phone_number, telegram_id FROM bd_accounts WHERE id = ANY($1::uuid[])`,
+            [bdAccountIds]
+          )
+        : Promise.resolve({ rows: [] }),
     ]);
+
     const sentMap = new Map((sentRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
     const repliedMap = new Map((repliedRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
     const sharedMap = new Map((sharedRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
     const readMap = new Map((readRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
     const wonMap = new Map((wonRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
     const revenueMap = new Map((revenueRes.rows as { campaign_id: string; total: string }[]).map((r) => [r.campaign_id, Number(r.total)]));
-    const withKpi = campaigns.map((c) => ({
-      ...c,
-      total_sent: sentMap.get(c.id) ?? 0,
-      total_read: readMap.get(c.id) ?? 0,
-      total_replied: repliedMap.get(c.id) ?? 0,
-      total_converted_to_shared_chat: sharedMap.get(c.id) ?? 0,
-      total_won: wonMap.get(c.id) ?? 0,
-      total_revenue: revenueMap.get(c.id) ?? 0,
-    }));
-    res.json(withKpi);
+    const bdAccountNameMap = new Map(
+      (bdAccountsRes.rows as { id: string; display_name: string | null; first_name: string | null; last_name: string | null; username: string | null; phone_number: string | null; telegram_id: string | null }[])
+        .map((a) => [
+          a.id,
+          a.display_name?.trim()
+            || [a.first_name, a.last_name].filter(Boolean).map(s => s!.trim()).filter(Boolean).join(' ')
+            || a.username?.trim()
+            || a.phone_number?.trim()
+            || a.telegram_id
+            || a.id.slice(0, 8),
+        ])
+    );
+
+    let summaryTotalSent = 0;
+    let summaryTotalReplied = 0;
+    let summaryTotalWon = 0;
+
+    const withKpi = campaigns.map((c: any) => {
+      const sent = sentMap.get(c.id) ?? 0;
+      const replied = repliedMap.get(c.id) ?? 0;
+      const won = wonMap.get(c.id) ?? 0;
+      summaryTotalSent += sent;
+      summaryTotalReplied += replied;
+      summaryTotalWon += won;
+
+      return {
+        ...c,
+        total_sent: sent,
+        total_read: readMap.get(c.id) ?? 0,
+        total_replied: replied,
+        total_converted_to_shared_chat: sharedMap.get(c.id) ?? 0,
+        total_won: won,
+        total_revenue: revenueMap.get(c.id) ?? 0,
+        bd_account_name: c.target_audience?.bdAccountId ? (bdAccountNameMap.get(c.target_audience.bdAccountId) ?? null) : null,
+      };
+    });
+
+    res.json({
+      data: withKpi,
+      total: totalCount,
+      page,
+      limit,
+      summary: { total_sent: summaryTotalSent, total_replied: summaryTotalReplied, total_won: summaryTotalWon },
+    });
   }));
 
   router.get('/agents', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const accounts = await pool.query(
-      `SELECT a.id, a.display_name, a.phone_number
+      `SELECT a.id, a.display_name, a.first_name, a.last_name, a.username, a.phone_number, a.telegram_id
        FROM bd_accounts a
        WHERE a.organization_id = $1 AND a.is_active = true
        ORDER BY a.display_name NULLS LAST, a.phone_number`,
@@ -101,9 +170,14 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       [organizationId, today]
     );
     const sentMap = new Map((sentToday.rows as { bd_account_id: string; sent_today: number }[]).map((r) => [r.bd_account_id, r.sent_today]));
-    const result = accounts.rows.map((a: { id: string; display_name: string | null; phone_number: string | null }) => ({
+    const result = accounts.rows.map((a: { id: string; display_name: string | null; first_name: string | null; last_name: string | null; username: string | null; phone_number: string | null; telegram_id: string | null }) => ({
       id: a.id,
-      displayName: a.display_name || a.phone_number || a.id.slice(0, 8),
+      displayName: a.display_name?.trim()
+        || [a.first_name, a.last_name].filter(Boolean).map(s => s!.trim()).filter(Boolean).join(' ')
+        || a.username?.trim()
+        || a.phone_number?.trim()
+        || a.telegram_id
+        || a.id.slice(0, 8),
       sentToday: sentMap.get(a.id) ?? 0,
     }));
     res.json(result);
@@ -292,8 +366,8 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { name, companyId, pipelineId, targetAudience, schedule } = req.body;
     const id = randomUUID();
     await pool.query(
-      `INSERT INTO campaigns (id, organization_id, company_id, pipeline_id, name, status, target_audience, schedule)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO campaigns (id, organization_id, company_id, pipeline_id, name, status, target_audience, schedule, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         id,
         organizationId,
@@ -303,6 +377,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
         CampaignStatus.DRAFT,
         JSON.stringify(targetAudience || {}),
         schedule ? JSON.stringify(schedule) : null,
+        userId || null,
       ]
     );
     const row = await pool.query('SELECT * FROM campaigns WHERE id = $1', [id]);

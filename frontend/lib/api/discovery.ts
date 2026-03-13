@@ -130,8 +130,10 @@ export async function parseStart(payload: {
   settings?: ParseSettings;
   accountIds: string[];
   listName?: string;
-}): Promise<{ taskId: string }> {
-  const { data } = await apiClient.post<{ taskId: string }>('/api/crm/parse/start', payload);
+  campaignId?: string;
+  campaignName?: string;
+}): Promise<{ taskId: string; campaignId?: string | null }> {
+  const { data } = await apiClient.post<{ taskId: string; campaignId?: string | null }>('/api/crm/parse/start', payload);
   return data;
 }
 

@@ -5,7 +5,7 @@ import { EventType } from '@getsale/events';
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
 import { ServiceHttpClient } from '@getsale/service-core';
-import { CHANNEL_TELEGRAM, ensureLeadInPipeline } from './helpers';
+import { CHANNEL_TELEGRAM, ensureLeadInPipeline, delayHoursFromStep } from './helpers';
 
 export interface EventHandlerDeps {
   pool: Pool;
@@ -56,17 +56,22 @@ async function processEvent(deps: EventHandlerDeps, event: any): Promise<void> {
 
   for (const p of participants.rows) {
     const stepsRes = await pool.query(
-      `SELECT order_index, trigger_type FROM campaign_sequences WHERE campaign_id = $1 ORDER BY order_index`,
+      `SELECT order_index, trigger_type, delay_hours, delay_minutes FROM campaign_sequences WHERE campaign_id = $1 ORDER BY order_index`,
       [p.campaign_id]
     );
-    const steps = stepsRes.rows as { order_index: number; trigger_type: string }[];
+    const steps = stepsRes.rows as { order_index: number; trigger_type: string; delay_hours?: number; delay_minutes?: number }[];
     const prevStep = p.current_step > 0 ? steps.find((s) => s.order_index === p.current_step - 1) : null;
     const waitingForReply = p.next_send_at === null && prevStep?.trigger_type === 'after_reply';
 
     if (waitingForReply) {
+      const currentStep = steps.find((s) => s.order_index === p.current_step);
+      const stepDelayHours = delayHoursFromStep(currentStep ?? null);
+      const humanJitterMs = 120_000 + Math.floor(Math.random() * 180_000);
+      const delayMs = Math.max(humanJitterMs, stepDelayHours * 3_600_000);
+      const nextSendAt = new Date(Date.now() + delayMs);
       await pool.query(
-        `UPDATE campaign_participants SET next_send_at = NOW(), updated_at = NOW() WHERE id = $1`,
-        [p.id]
+        `UPDATE campaign_participants SET next_send_at = $1, updated_at = NOW() WHERE id = $2`,
+        [nextSendAt, p.id]
       );
     } else {
       await pool.query(

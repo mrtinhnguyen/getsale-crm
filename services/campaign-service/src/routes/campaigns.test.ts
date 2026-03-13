@@ -30,15 +30,16 @@ describe('Campaigns Router', () => {
 
   describe('GET /api/campaigns', () => {
     it('returns empty array when no campaigns', async () => {
-      pool.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      pool.query
+        .mockResolvedValueOnce({ rows: [{ total: 0 }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
       const res = await request(app)
         .get('/api/campaigns')
         .set(authHeaders);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body).toHaveLength(0);
+      expect(res.body).toMatchObject({ data: [], total: 0, page: 1, limit: 20 });
     });
   });
 

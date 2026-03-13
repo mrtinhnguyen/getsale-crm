@@ -256,6 +256,44 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
     res.json({ success: true });
   }));
 
+  // POST /:id/typing — send typing indicator
+  router.post('/:id/typing', asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const { chatId } = req.body;
+
+    if (!chatId) {
+      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
+    }
+
+    await getAccountOr404(pool, id, organizationId, 'id');
+    if (!telegramManager.isConnected(id)) {
+      throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
+    }
+
+    await telegramManager.setTyping(id, String(chatId));
+    res.json({ success: true });
+  }));
+
+  // POST /:id/read — mark messages as read
+  router.post('/:id/read', asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const { chatId } = req.body;
+
+    if (!chatId) {
+      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
+    }
+
+    await getAccountOr404(pool, id, organizationId, 'id');
+    if (!telegramManager.isConnected(id)) {
+      throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
+    }
+
+    await telegramManager.markAsRead(id, String(chatId));
+    res.json({ success: true });
+  }));
+
   // POST /:id/chats/:chatId/load-older-history — load one page of older messages from Telegram
   router.post('/:id/chats/:chatId/load-older-history', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;

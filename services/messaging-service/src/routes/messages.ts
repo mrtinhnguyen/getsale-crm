@@ -233,7 +233,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
   // POST /send — send message (optionally with file as base64)
   router.post('/send', asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
-    const { contactId, channel, channelId, content, bdAccountId, fileBase64, fileName, replyToMessageId } = req.body;
+    const { contactId, channel, channelId, content, bdAccountId, fileBase64, fileName, replyToMessageId, source } = req.body;
 
     if (!contactId || !channel || !channelId) {
       throw new AppError(400, 'Missing required fields: contactId, channel, channelId', ErrorCodes.VALIDATION);
@@ -253,12 +253,13 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     }
 
     const contactResult = await pool.query(
-      'SELECT id, organization_id, telegram_id FROM contacts WHERE id = $1 AND organization_id = $2',
+      'SELECT id, organization_id, telegram_id, first_name, last_name, username FROM contacts WHERE id = $1 AND organization_id = $2',
       [contactId, organizationId]
     );
     if (contactResult.rows.length === 0) {
       throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
     }
+    const contactRow = contactResult.rows[0] as { id: string; first_name?: string; last_name?: string; username?: string };
 
     const captionOrContent = typeof content === 'string' ? content : '';
     const contentForDb = captionOrContent || (fileName ? `[Файл: ${fileName}]` : '[Медиа]');
@@ -291,11 +292,13 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     );
     const message = result.rows[0];
 
-    await pool.query(
-      `UPDATE conversations SET first_manager_reply_at = COALESCE(first_manager_reply_at, NOW()), updated_at = NOW()
-       WHERE organization_id = $1 AND bd_account_id IS NOT DISTINCT FROM $2 AND channel = $3 AND channel_id = $4`,
-      [organizationId, bdAccountId || null, channel, channelId]
-    );
+    if (source !== 'campaign') {
+      await pool.query(
+        `UPDATE conversations SET first_manager_reply_at = COALESCE(first_manager_reply_at, NOW()), updated_at = NOW()
+         WHERE organization_id = $1 AND bd_account_id IS NOT DISTINCT FROM $2 AND channel = $3 AND channel_id = $4`,
+        [organizationId, bdAccountId || null, channel, channelId]
+      );
+    }
 
     let sent = false;
     if (channel === MessageChannel.TELEGRAM) {
@@ -348,6 +351,19 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
           );
         }
         sent = true;
+
+        const chatTitle = [contactRow.first_name, contactRow.last_name].filter(Boolean).join(' ')
+          || contactRow.username || channelId;
+        try {
+          await pool.query(
+            `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type)
+             VALUES ($1, $2, $3, 'user')
+             ON CONFLICT (bd_account_id, telegram_chat_id) DO NOTHING`,
+            [bdAccountId, channelId, chatTitle]
+          );
+        } catch (syncErr) {
+          log.warn({ message: 'Failed to upsert bd_account_sync_chats', error: syncErr instanceof Error ? syncErr.message : String(syncErr) });
+        }
       } catch (error: any) {
         log.error({ message: 'Error sending Telegram message', error: String(error) });
         await pool.query('UPDATE messages SET status = $1, metadata = $2 WHERE id = $3', [

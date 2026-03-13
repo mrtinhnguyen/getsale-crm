@@ -27,6 +27,14 @@ import Button from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 
+interface ProxyConfig {
+  type: 'socks5' | 'http';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
 interface BDAccountDetail {
   id: string;
   organization_id: string;
@@ -47,6 +55,7 @@ interface BDAccountDetail {
   bio?: string | null;
   photo_file_id?: string | null;
   display_name?: string | null;
+  proxy_config?: ProxyConfig | null;
 }
 
 function getDisplayName(account: BDAccountDetail): string {
@@ -82,6 +91,13 @@ export default function BDAccountCardPage() {
   const [savingDisplayName, setSavingDisplayName] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [proxyType, setProxyType] = useState<'none' | 'socks5' | 'http'>('none');
+  const [proxyHost, setProxyHost] = useState('');
+  const [proxyPort, setProxyPort] = useState('');
+  const [proxyUser, setProxyUser] = useState('');
+  const [proxyPass, setProxyPass] = useState('');
+  const [savingProxy, setSavingProxy] = useState(false);
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -91,6 +107,14 @@ export default function BDAccountCardPage() {
       .then((res) => {
         setAccount(res.data);
         setDisplayNameValue(res.data.display_name ?? '');
+        const pc = res.data.proxy_config;
+        if (pc && pc.host) {
+          setProxyType(pc.type || 'socks5');
+          setProxyHost(pc.host);
+          setProxyPort(String(pc.port));
+          setProxyUser(pc.username || '');
+          setProxyPass(pc.password || '');
+        }
       })
       .catch((err: any) => {
         setError(err.response?.data?.error || err.message || 'Не удалось загрузить аккаунт');
@@ -163,6 +187,23 @@ export default function BDAccountCardPage() {
       router.push('/dashboard/bd-accounts');
     } catch (err: any) {
       setActionError(err.response?.data?.error || err.response?.data?.message || 'Ошибка удаления');
+    }
+  };
+
+  const handleSaveProxy = async () => {
+    if (!id) return;
+    setSavingProxy(true);
+    setActionError(null);
+    try {
+      const payload = proxyType === 'none'
+        ? { proxy_config: null }
+        : { proxy_config: { type: proxyType, host: proxyHost.trim(), port: Number(proxyPort), username: proxyUser.trim() || undefined, password: proxyPass.trim() || undefined } };
+      await apiClient.patch(`/api/bd-accounts/${id}`, payload);
+      setAccount((prev) => prev ? { ...prev, proxy_config: proxyType === 'none' ? null : payload.proxy_config as ProxyConfig } : null);
+    } catch (err: any) {
+      setActionError(err.response?.data?.error || err.response?.data?.message || 'Error saving proxy');
+    } finally {
+      setSavingProxy(false);
     }
   };
 
@@ -309,8 +350,55 @@ export default function BDAccountCardPage() {
           </div>
         )}
 
+        {account.is_owner && (
+          <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-3">
+              <Settings className="w-4 h-4" /> Proxy
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Type</label>
+                <select
+                  value={proxyType}
+                  onChange={(e) => setProxyType(e.target.value as 'none' | 'socks5' | 'http')}
+                  className="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm"
+                >
+                  <option value="none">No proxy</option>
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP</option>
+                </select>
+              </div>
+              {proxyType !== 'none' && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Host</label>
+                    <Input value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="1.2.3.4" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Port</label>
+                    <Input value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="1080" type="number" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Username</label>
+                    <Input value={proxyUser} onChange={(e) => setProxyUser(e.target.value)} placeholder="Optional" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Password</label>
+                    <Input value={proxyPass} onChange={(e) => setProxyPass(e.target.value)} placeholder="Optional" type="password" />
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="mt-3">
+              <Button size="sm" onClick={handleSaveProxy} disabled={savingProxy || (proxyType !== 'none' && (!proxyHost.trim() || !proxyPort.trim()))}>
+                {savingProxy ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Save className="w-4 h-4 mr-1" />}
+                Save proxy
+              </Button>
+            </div>
+          </div>
+        )}
+
         <div className="mt-6 flex flex-wrap gap-2">
-          {/* Агент (bidi): ссылка «Диалоги» (настройка синхронизации) только для своего аккаунта */}
           {((currentUser?.role?.toLowerCase() !== 'bidi') || account.is_owner) && (
             <Link
               href={`/dashboard/bd-accounts?accountId=${account.id}&openSelectChats=1`}

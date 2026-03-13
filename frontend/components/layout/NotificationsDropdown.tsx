@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import { Bell } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useNotificationsStore } from '@/lib/stores/notifications-store';
@@ -12,6 +13,7 @@ const POLL_INTERVAL_MS = 45_000;
 
 export function NotificationsDropdown() {
   const { t } = useTranslation();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [markingRead, setMarkingRead] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -117,7 +119,18 @@ export function NotificationsDropdown() {
             ) : (
               <ul className="divide-y divide-border">
                 {notificationItems.map((item) => (
-                  <li key={item.id} className="px-4 py-3 hover:bg-muted/50">
+                  <li
+                    key={item.id}
+                    className="px-4 py-3 hover:bg-muted/50 cursor-pointer transition-colors"
+                    onClick={() => {
+                      if (item.entity_type === 'contact') {
+                        router.push(`/dashboard/messaging?contactId=${item.entity_id}`);
+                      } else if (item.entity_type === 'deal') {
+                        router.push(`/dashboard/pipeline?dealId=${item.entity_id}`);
+                      }
+                      setOpen(false);
+                    }}
+                  >
                     <p className="text-sm font-medium text-foreground truncate">
                       {item.title || t('crm.reminder', 'Напоминание')}
                     </p>

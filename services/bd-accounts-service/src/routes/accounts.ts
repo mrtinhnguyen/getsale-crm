@@ -95,7 +95,7 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       pool,
       id,
       organizationId,
-      'id, organization_id, telegram_id, phone_number, is_active, is_demo, connected_at, last_activity, created_at, sync_status, sync_progress_done, sync_progress_total, sync_error, created_by_user_id AS owner_id, first_name, last_name, username, bio, photo_file_id, display_name'
+      'id, organization_id, telegram_id, phone_number, is_active, is_demo, connected_at, last_activity, created_at, sync_status, sync_progress_done, sync_progress_total, sync_error, created_by_user_id AS owner_id, first_name, last_name, username, bio, photo_file_id, display_name, proxy_config'
     );
     res.json({
       ...row,
@@ -103,11 +103,11 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
     });
   }));
 
-  // PATCH /:id — update display_name
+  // PATCH /:id — update display_name and/or proxy_config
   router.patch('/:id', asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
-    const { display_name: displayName } = req.body ?? {};
+    const { display_name: displayName, proxy_config: proxyConfig } = req.body ?? {};
 
     const accountResult = await pool.query(
       'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
@@ -122,12 +122,43 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       throw new AppError(403, 'Only the account owner can update', ErrorCodes.FORBIDDEN);
     }
 
-    const value = typeof displayName === 'string' ? displayName.trim() || null : null;
+    const sets: string[] = [];
+    const params: (string | null)[] = [];
+    let idx = 1;
+
+    if (displayName !== undefined) {
+      const value = typeof displayName === 'string' ? displayName.trim() || null : null;
+      sets.push(`display_name = $${idx++}`);
+      params.push(value);
+    }
+
+    if (proxyConfig !== undefined) {
+      if (proxyConfig === null) {
+        sets.push(`proxy_config = $${idx++}`);
+        params.push(null);
+      } else if (typeof proxyConfig === 'object' && proxyConfig.host && proxyConfig.port) {
+        sets.push(`proxy_config = $${idx++}`);
+        params.push(JSON.stringify({
+          type: proxyConfig.type === 'http' ? 'http' : 'socks5',
+          host: String(proxyConfig.host).trim(),
+          port: Number(proxyConfig.port),
+          ...(proxyConfig.username ? { username: String(proxyConfig.username) } : {}),
+          ...(proxyConfig.password ? { password: String(proxyConfig.password) } : {}),
+        }));
+      }
+    }
+
+    if (sets.length === 0) {
+      return res.json({ success: true });
+    }
+
+    sets.push('updated_at = NOW()');
+    params.push(id);
     await pool.query(
-      'UPDATE bd_accounts SET display_name = $1, updated_at = NOW() WHERE id = $2',
-      [value, id]
+      `UPDATE bd_accounts SET ${sets.join(', ')} WHERE id = $${idx}`,
+      params
     );
-    res.json({ success: true, display_name: value });
+    res.json({ success: true });
   }));
 
   // GET /:id/status

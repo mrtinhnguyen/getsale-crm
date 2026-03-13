@@ -29,6 +29,34 @@ function formatLogArgs(...args: unknown[]): string {
   }).join(' ');
 }
 
+interface ProxyConfig {
+  type: 'socks5' | 'http';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
+function buildTelegramProxy(cfg: ProxyConfig | null | undefined): Record<string, unknown> | undefined {
+  if (!cfg || !cfg.host || !cfg.port) return undefined;
+  if (cfg.type === 'socks5') {
+    return {
+      ip: cfg.host,
+      port: cfg.port,
+      socksType: 5,
+      ...(cfg.username ? { username: cfg.username } : {}),
+      ...(cfg.password ? { password: cfg.password } : {}),
+    };
+  }
+  return {
+    ip: cfg.host,
+    port: cfg.port,
+    MTProxy: false,
+    ...(cfg.username ? { username: cfg.username } : {}),
+    ...(cfg.password ? { password: cfg.password } : {}),
+  };
+}
+
 interface StructuredLog {
   info(...args: unknown[]): void;
   error(...args: unknown[]): void;
@@ -234,20 +262,21 @@ export class TelegramManager {
     userId: string,
     phoneNumber: string,
     apiId: number,
-    apiHash: string
+    apiHash: string,
+    proxyConfigRaw?: ProxyConfig | null
   ): Promise<{ phoneCodeHash: string }> {
     try {
-      // Check if client already exists for this account
       if (this.clients.has(accountId)) {
         await this.disconnectAccount(accountId);
       }
 
+      const proxy = buildTelegramProxy(proxyConfigRaw);
       const session = new StringSession('');
       const client = new TelegramClient(session, apiId, apiHash, {
         connectionRetries: 5,
         retryDelay: 1000,
-        timeout: 30000, // Increased timeout to handle datacenter migration
-        // Don't disable updates, but we won't set up handlers until after auth
+        timeout: 30000,
+        ...(proxy ? { proxy } : {}),
       });
 
       // Connect client with proper error handling for datacenter migration
@@ -446,7 +475,8 @@ export class TelegramManager {
     organizationId: string,
     userId: string,
     apiId: number,
-    apiHash: string
+    apiHash: string,
+    proxyConfigRaw?: ProxyConfig | null
   ): Promise<{ sessionId: string }> {
     const sessionId = randomUUID();
     this.qrSessions.set(sessionId, {
@@ -458,11 +488,13 @@ export class TelegramManager {
     });
     this.persistQrState(sessionId);
 
+    const proxy = buildTelegramProxy(proxyConfigRaw);
     const session = new StringSession('');
     const client = new TelegramClient(session, apiId, apiHash, {
       connectionRetries: 5,
       retryDelay: 1000,
       timeout: 30000,
+      ...(proxy ? { proxy } : {}),
     });
 
     (async () => {
@@ -741,11 +773,19 @@ export class TelegramManager {
         throw new Error('Session string is required for existing accounts');
       }
 
+      let proxyConfig: ProxyConfig | null = null;
+      try {
+        const proxyRow = await this.pool.query('SELECT proxy_config FROM bd_accounts WHERE id = $1', [accountId]);
+        proxyConfig = proxyRow.rows[0]?.proxy_config ?? null;
+      } catch { /* proxy is optional */ }
+
       const session = new StringSession(sessionString);
+      const proxy = buildTelegramProxy(proxyConfig);
       const client = new TelegramClient(session, apiId, apiHash, {
         connectionRetries: 5,
         retryDelay: 1000,
-        timeout: 30000, // Increased timeout to 30 seconds to reduce TIMEOUT errors
+        timeout: 30000,
+        ...(proxy ? { proxy } : {}),
       });
 
       // Connect client first
@@ -2745,7 +2785,7 @@ export class TelegramManager {
             return id != null && String(id) === cid;
           });
           const title = (chat?.title ?? chat?.name ?? '').trim() || cid;
-          const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'channel' : 'chat';
+          const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'group' : 'chat';
           const membersCount = chat?.participantsCount ?? chat?.participants_count ?? undefined;
           const username = (chat?.username ?? '').trim() || undefined;
           chatsAcc.push({ chatId: cid, title, peerType, membersCount, username });
@@ -2763,7 +2803,7 @@ export class TelegramManager {
         if (seenIds.has(cid) || excludeChatIds.has(cid)) continue;
         seenIds.add(cid);
         const title = (c.title ?? c.name ?? '').trim() || cid;
-        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'channel' : 'chat';
+        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'group' : 'chat';
         const membersCount = c?.participantsCount ?? c?.participants_count ?? undefined;
         const username = (c?.username ?? '').trim() || undefined;
         chatsAcc.push({ chatId: cid, title, peerType, membersCount, username });
@@ -2936,7 +2976,7 @@ export class TelegramManager {
             return id != null && String(id) === cid;
           });
           const title = (chat?.title ?? chat?.name ?? '').trim() || cid;
-          const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'channel' : 'chat';
+          const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'group' : 'chat';
           const membersCount = chat?.participantsCount ?? chat?.participants_count ?? undefined;
           const username = (chat?.username ?? '').trim() || undefined;
           chatsAcc.push({ chatId: cid, title, peerType, membersCount, username });
@@ -2953,7 +2993,7 @@ export class TelegramManager {
         if (seenIds.has(cid) || excludeChatIds.has(cid)) continue;
         seenIds.add(cid);
         const title = (c.title ?? c.name ?? '').trim() || cid;
-        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'channel' : 'chat';
+        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'group' : 'chat';
         const membersCount = c?.participantsCount ?? c?.participants_count ?? undefined;
         const username = (c?.username ?? '').trim() || undefined;
         chatsAcc.push({ chatId: cid, title, peerType, membersCount, username });
@@ -3118,7 +3158,7 @@ export class TelegramManager {
           return id != null && String(id) === cid;
         });
         const title = (chat?.title ?? chat?.name ?? '').trim() || cid;
-        const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'channel' : 'chat';
+        const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'group' : 'chat';
         const membersCount = chat?.participantsCount ?? chat?.participants_count ?? undefined;
         const username = (chat?.username ?? '').trim() || undefined;
         out.push({ chatId: cid, title, peerType, membersCount, username });
@@ -3154,7 +3194,7 @@ export class TelegramManager {
         const id = c.id ?? c.channelId ?? c.chat_id ?? c.chatId;
         const chatId = id != null ? String(id) : '';
         const title = (c.title ?? c.name ?? '').trim() || chatId;
-        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'channel' : 'chat';
+        const peerType = (c as any)?.broadcast ? 'channel' : (c as any)?.megagroup ? 'group' : 'chat';
         const membersCount = c?.participantsCount ?? c?.participants_count ?? undefined;
         const username = (c?.username ?? '').trim() || undefined;
         return { chatId, title, peerType, membersCount, username };
@@ -3528,7 +3568,7 @@ export class TelegramManager {
         }
         const id = c.id ?? c.channelId ?? c.chatId;
         const title = (c.title ?? c.name ?? '').trim() || String(id);
-        const peerType = (c as any).broadcast ? 'channel' : (c as any).megagroup ? 'channel' : 'chat';
+        const peerType = (c as any).broadcast ? 'channel' : (c as any).megagroup ? 'group' : 'chat';
         return { chatId: String(id), title, peerType };
       } catch (e: any) {
         if (e?.message?.includes('INVITE_HASH_EXPIRED') || (e as any).code === 'INVITE_HASH_EXPIRED') {
@@ -3580,7 +3620,7 @@ export class TelegramManager {
         return id != null && String(id) === cid;
       });
       const title = (chat?.title ?? chat?.name ?? '').trim() || cid;
-      const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'channel' : 'chat';
+      const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'group' : 'chat';
       return { chatId: cid, title, peerType };
     } catch (e: any) {
       if (e?.message?.includes('USERNAME_NOT_OCCUPIED') || (e as any).code === 'USERNAME_NOT_OCCUPIED') {
@@ -4497,6 +4537,48 @@ export class TelegramManager {
     } catch (error) {
       this.log.error({ message: `Error sending message`, error: error?.message || String(error) });
       throw error;
+    }
+  }
+
+  /**
+   * Send typing indicator (messages.SetTyping) to simulate human behavior.
+   */
+  async setTyping(accountId: string, chatId: string): Promise<void> {
+    const clientInfo = this.clients.get(accountId);
+    if (!clientInfo || !clientInfo.isConnected) {
+      throw new Error(`Account ${accountId} is not connected`);
+    }
+    try {
+      const peer = await clientInfo.client.getInputEntity(chatId);
+      await clientInfo.client.invoke(
+        new Api.messages.SetTyping({ peer, action: new Api.SendMessageTypingAction() })
+      );
+    } catch (error: any) {
+      this.log.warn({ message: 'setTyping failed', accountId, chatId, error: error?.message || String(error) });
+    }
+  }
+
+  /**
+   * Mark messages as read in a chat (messages.ReadHistory / channels.ReadHistory).
+   */
+  async markAsRead(accountId: string, chatId: string): Promise<void> {
+    const clientInfo = this.clients.get(accountId);
+    if (!clientInfo || !clientInfo.isConnected) {
+      throw new Error(`Account ${accountId} is not connected`);
+    }
+    try {
+      const entity = await clientInfo.client.getInputEntity(chatId);
+      if ((entity as any).className === 'InputPeerChannel') {
+        await clientInfo.client.invoke(
+          new Api.channels.ReadHistory({ channel: entity as any, maxId: 0 })
+        );
+      } else {
+        await clientInfo.client.invoke(
+          new Api.messages.ReadHistory({ peer: entity, maxId: 0 })
+        );
+      }
+    } catch (error: any) {
+      this.log.warn({ message: 'markAsRead failed', accountId, chatId, error: error?.message || String(error) });
     }
   }
 

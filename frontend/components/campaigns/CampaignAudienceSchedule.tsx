@@ -362,7 +362,36 @@ export function CampaignAudienceSchedule({
         </section>
       )}
 
-      {/* 3. Обогащение контактов перед запуском */}
+      {/* 3. Задержка между отправками */}
+      <section className="rounded-xl border border-border bg-card p-6">
+        <h3 className="text-sm font-semibold text-foreground mb-1">{t('campaigns.sendDelayLabel')}</h3>
+        <p className="text-xs text-muted-foreground mb-3">{t('campaigns.sendDelayHint')}</p>
+        <div className="flex flex-wrap gap-2">
+          {([
+            { value: 30, label: t('campaigns.delaySeconds', { count: 30 }) },
+            { value: 60, label: t('campaigns.delayMinutes', { count: 1 }) },
+            { value: 120, label: t('campaigns.delayMinutes', { count: 2 }) },
+            { value: 300, label: t('campaigns.delayMinutes', { count: 5 }) },
+            { value: 600, label: t('campaigns.delayMinutes', { count: 10 }) },
+          ] as const).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={!isDraft}
+              onClick={() => { setSendDelaySeconds(opt.value); saveAudience({ sendDelaySeconds: opt.value }); }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                sendDelaySeconds === opt.value
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-card text-muted-foreground hover:border-primary/50'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* 4. Обогащение контактов перед запуском */}
       <section className="rounded-xl border border-border bg-card p-6">
         <label className="flex items-center gap-3 cursor-pointer">
           <input

@@ -39,13 +39,24 @@ export interface Campaign {
   } | null;
   created_at: string;
   updated_at: string;
-  /** PHASE 2.5 — мини-KPI в списке (приходят с GET /api/campaigns). */
+  created_by_user_id?: string | null;
+  owner_name?: string | null;
+  bd_account_name?: string | null;
+  total_participants?: number;
   total_sent?: number;
   total_read?: number;
   total_replied?: number;
   total_converted_to_shared_chat?: number;
   total_won?: number;
   total_revenue?: number;
+}
+
+export interface CampaignListResponse {
+  data: Campaign[];
+  total: number;
+  page: number;
+  limit: number;
+  summary: { total_sent: number; total_replied: number; total_won: number };
 }
 
 export interface CampaignTemplate {
@@ -158,8 +169,8 @@ export interface CampaignStats {
   avg_time_to_won_hours?: number | null;
 }
 
-export async function fetchCampaigns(params?: { status?: CampaignStatus }): Promise<Campaign[]> {
-  const { data } = await apiClient.get<Campaign[]>('/api/campaigns', { params: params ?? {} });
+export async function fetchCampaigns(params?: { status?: CampaignStatus; page?: number; limit?: number }): Promise<CampaignListResponse> {
+  const { data } = await apiClient.get<CampaignListResponse>('/api/campaigns', { params: params ?? {} });
   return data;
 }
 

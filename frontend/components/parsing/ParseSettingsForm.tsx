@@ -16,6 +16,8 @@ interface ParseSettingsFormProps {
   onExcludeAdminsChange: (v: boolean) => void;
   listName: string;
   onListNameChange: (v: string) => void;
+  createCampaign?: boolean;
+  onCreateCampaignChange?: (v: boolean) => void;
   onStart: () => void;
   starting?: boolean;
   disabled?: boolean;
@@ -32,6 +34,8 @@ export default function ParseSettingsForm({
   onExcludeAdminsChange,
   listName,
   onListNameChange,
+  createCampaign,
+  onCreateCampaignChange,
   onStart,
   starting,
   disabled,
@@ -115,6 +119,21 @@ export default function ParseSettingsForm({
           disabled={disabled}
         />
       </div>
+
+      {onCreateCampaignChange && (
+        <div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!createCampaign}
+              onChange={(e) => onCreateCampaignChange(e.target.checked)}
+              disabled={disabled}
+              className="w-4 h-4 rounded text-blue-600"
+            />
+            <span className="text-sm">{t('parsing.createCampaignLabel')}</span>
+          </label>
+        </div>
+      )}
 
       <Button
         onClick={onStart}

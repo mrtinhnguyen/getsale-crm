@@ -171,6 +171,8 @@ export const ParseStartSchema = z.object({
   settings: ParseSettingsSchema.optional(),
   accountIds: z.array(z.string().uuid()).min(1).max(10),
   listName: z.string().max(255).optional(),
+  campaignId: z.string().uuid().optional(),
+  campaignName: z.string().max(255).optional(),
 });
 export type ParseResolveInput = z.infer<typeof ParseResolveSchema>;
 export type ParseStartInput = z.infer<typeof ParseStartSchema>;

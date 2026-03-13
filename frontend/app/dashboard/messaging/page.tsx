@@ -460,6 +460,51 @@ export default function MessagingPage() {
                       </a>
                     </div>
                   )}
+                  <div className="border-t border-border pt-3 space-y-3">
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.notes', 'Заметки')}</h4>
+                    {s.leadNotes.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">{t('crm.noNotes', 'Нет заметок')}</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {s.leadNotes.map((note) => (
+                          <li key={note.id} className="rounded-lg border border-border bg-muted/20 p-2 text-sm">
+                            <p className="text-foreground whitespace-pre-wrap break-words">{note.content || '—'}</p>
+                            <div className="flex items-center justify-between mt-1.5">
+                              <span className="text-xs text-muted-foreground">{formatLeadPanelDate(note.created_at)}</span>
+                              <button type="button" onClick={() => deleteNote(note.id).then(() => fetchContactNotes(s.leadContext!.contact_id!).then(s.setLeadNotes))} className="text-muted-foreground hover:text-destructive text-xs flex items-center gap-1">
+                                <Trash2 className="w-3.5 h-3.5" />{t('common.delete')}
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="border-t border-border pt-3 space-y-3">
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.reminders', 'Напоминания')}</h4>
+                    {s.leadReminders.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">{t('crm.noReminders', 'Нет напоминаний')}</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {s.leadReminders.map((rem) => (
+                          <li key={rem.id} className={clsx('rounded-lg border p-2 text-sm', rem.done ? 'border-border bg-muted/10 opacity-75' : 'border-border bg-muted/20')}>
+                            <p className="text-foreground font-medium">{rem.title || '—'}</p>
+                            <div className="flex items-center justify-between mt-1.5 flex-wrap gap-1">
+                              <span className="text-xs text-muted-foreground">{formatLeadPanelDate(rem.remind_at)}</span>
+                              {rem.done ? (
+                                <span className="text-xs text-emerald-600 dark:text-emerald-400">{t('crm.markDone', 'Выполнено')}</span>
+                              ) : (
+                                <div className="flex items-center gap-1">
+                                  <button type="button" onClick={() => updateReminder(rem.id, { done: true }).then(() => fetchContactReminders(s.leadContext!.contact_id!).then(s.setLeadReminders))} className="text-xs text-primary hover:underline">{t('crm.markDone', 'Выполнено')}</button>
+                                  <button type="button" onClick={() => deleteReminder(rem.id).then(() => fetchContactReminders(s.leadContext!.contact_id!).then(s.setLeadReminders))} className="text-muted-foreground hover:text-destructive p-0.5"><Trash2 className="w-3.5 h-3.5" /></button>
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                   <Button variant="outline" size="sm" className="w-full justify-center gap-2" onClick={() => s.setLeadCardModalOpen(true)}><User className="w-4 h-4" />{t('messaging.openLeadCard', 'Открыть карточку лида')}</Button>
                 </div>
               ) : null}

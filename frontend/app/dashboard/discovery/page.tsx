@@ -107,6 +107,7 @@ export default function ContactDiscoveryPage() {
   const [parseTaskId, setParseTaskId] = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [parseStarting, setParseStarting] = useState(false);
+  const [parseCreateCampaign, setParseCreateCampaign] = useState(true);
 
   useEffect(() => {
     if (accounts.length > 0 && !parseResolveAccountId) setParseResolveAccountId(accounts[0].id);
@@ -276,7 +277,7 @@ export default function ContactDiscoveryPage() {
          input: g.chatId,
          chatId: g.chatId,
          title: g.title || g.chatId,
-         type: (g.peerType === 'channel' ? 'public_group' : 'public_group') as ResolvedSource['type'],
+         type: (g.peerType === 'channel' ? 'channel' : 'public_group') as ResolvedSource['type'],
          canGetMembers: true,
          canGetMessages: true,
        }))
@@ -306,6 +307,7 @@ export default function ContactDiscoveryPage() {
         settings: { depth: parseDepth, excludeAdmins: parseExcludeAdmins },
         accountIds: parseAccountIds,
         listName: parseListName.trim() || undefined,
+        ...(parseCreateCampaign && parseListName.trim() ? { campaignName: parseListName.trim() } : {}),
       });
       setParseTaskId(taskId);
       setParseStep(3);
@@ -450,7 +452,7 @@ export default function ContactDiscoveryPage() {
                          <tr key={i}>
                            <td className="p-2 font-mono text-xs">{g.chatId}</td>
                            <td className="p-2">{g.title}</td>
-                           <td className="p-2">{g.peerType}</td>
+                           <td className="p-2">{g.peerType === 'group' ? t('discovery.typeGroup') : g.peerType === 'channel' ? t('discovery.typeChannel') : g.peerType === 'chat' ? t('discovery.typeChat') : g.peerType}</td>
                          </tr>
                        ))}
                      </tbody>
@@ -652,6 +654,8 @@ export default function ContactDiscoveryPage() {
                    onExcludeAdminsChange={setParseExcludeAdmins}
                    listName={parseListName}
                    onListNameChange={setParseListName}
+                   createCampaign={parseCreateCampaign}
+                   onCreateCampaignChange={setParseCreateCampaign}
                    onStart={handleParseStart}
                    starting={parseStarting}
                  />

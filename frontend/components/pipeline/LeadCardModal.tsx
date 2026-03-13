@@ -3,13 +3,15 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
-import { MessageSquare, ExternalLink, Loader2, Save } from 'lucide-react';
+import { MessageSquare, ExternalLink, Loader2, Save, Trash2 } from 'lucide-react';
 import { LeadContextAvatar } from '@/components/messaging/LeadContextAvatar';
 import { Modal } from '@/components/ui/Modal';
 import Button from '@/components/ui/Button';
 import { fetchLeadContextByLeadId, resolveContact, type LeadContextByLead } from '@/lib/api/messaging';
 import { updateLead } from '@/lib/api/pipeline';
 import { apiClient } from '@/lib/api/client';
+import { fetchContactNotes, fetchContactReminders, deleteNote, updateReminder, deleteReminder, type Note, type Reminder } from '@/lib/api/crm';
+import { clsx } from 'clsx';
 
 function formatLeadPanelDate(iso: string): string {
   if (!iso || Number.isNaN(new Date(iso).getTime())) return '—';
@@ -49,6 +51,8 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
   const [saveError, setSaveError] = useState<string | null>(null);
   /** Resolved bd_account_id + channel_id for avatar when lead has no conversation */
   const [avatarResolution, setAvatarResolution] = useState<{ bd_account_id: string; channel_id: string } | null>(null);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
 
   useEffect(() => {
     if (!open || !leadId) {
@@ -56,6 +60,8 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
       setError(null);
       setSaveError(null);
       setAvatarResolution(null);
+      setNotes([]);
+      setReminders([]);
       return;
     }
     setLoading(true);
@@ -85,6 +91,17 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
       .catch(() => setError(t('common.error', 'Error')))
       .finally(() => setLoading(false));
   }, [open, leadId, t]);
+
+  useEffect(() => {
+    if (!context?.contact_id) {
+      setNotes([]);
+      setReminders([]);
+      return;
+    }
+    const cid = context.contact_id;
+    fetchContactNotes(cid).then(setNotes).catch(() => setNotes([]));
+    fetchContactReminders(cid).then(setReminders).catch(() => setReminders([]));
+  }, [context?.contact_id]);
 
   const isDirty = useMemo(() => {
     if (!context) return false;
@@ -165,9 +182,8 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
               </span>
             </div>
 
-            {/* Editable fields */}
-            <div className="grid grid-cols-1 gap-4">
-              {/* Responsible — editable */}
+            {/* Editable fields — two columns on larger screens */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">{t('pipeline.responsible', 'Responsible')}</label>
                 <select
@@ -181,16 +197,12 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
                   ))}
                 </select>
               </div>
-
-              {/* Date added — read-only */}
               {context.became_lead_at && (
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">{t('pipeline.dateAdded', 'Date added')}</label>
                   <p className="text-sm text-foreground px-3 py-2 rounded-lg bg-muted/30 border border-transparent">{formatLeadPanelDate(context.became_lead_at)}</p>
                 </div>
               )}
-
-              {/* Pipeline / Stage — stage editable */}
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">{t('crm.pipelineStage', 'Pipeline / Stage')}</label>
                 <p className="text-xs text-muted-foreground mb-1">{context.pipeline.name}</p>
@@ -204,8 +216,6 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
                   ))}
                 </select>
               </div>
-
-              {/* Amount — editable */}
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">{t('crm.amount', 'Amount')}</label>
                 <input
@@ -218,15 +228,62 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
                 />
               </div>
-
-              {/* Campaign — read-only */}
               {(context.campaign != null || context.became_lead_at) && (
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-muted-foreground mb-1">{t('messaging.leadPanelCampaign', 'Campaign')}</label>
                   <p className="text-sm text-foreground px-3 py-2 rounded-lg bg-muted/30 border border-transparent">
                     {context.campaign != null ? context.campaign.name : '—'}
                   </p>
                 </div>
+              )}
+            </div>
+
+            {/* Notes */}
+            <div className="border-t border-border pt-4 space-y-2">
+              <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.notes', 'Notes')}</h4>
+              {notes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t('crm.noNotes', 'No notes')}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notes.map((note) => (
+                    <li key={note.id} className="rounded-lg border border-border bg-muted/20 p-2 text-sm">
+                      <p className="text-foreground whitespace-pre-wrap break-words">{note.content || '—'}</p>
+                      <div className="flex items-center justify-between mt-1.5">
+                        <span className="text-xs text-muted-foreground">{formatLeadPanelDate(note.created_at)}</span>
+                        <button type="button" onClick={() => deleteNote(note.id).then(() => fetchContactNotes(context.contact_id!).then(setNotes))} className="text-muted-foreground hover:text-destructive text-xs flex items-center gap-1" aria-label={t('common.delete')}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Reminders */}
+            <div className="border-t border-border pt-4 space-y-2">
+              <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('crm.reminders', 'Reminders')}</h4>
+              {reminders.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t('crm.noReminders', 'No reminders')}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {reminders.map((rem) => (
+                    <li key={rem.id} className={clsx('rounded-lg border p-2 text-sm', rem.done ? 'border-border bg-muted/10 opacity-75' : 'border-border bg-muted/20')}>
+                      <p className="text-foreground font-medium">{rem.title || '—'}</p>
+                      <div className="flex items-center justify-between mt-1.5 flex-wrap gap-1">
+                        <span className="text-xs text-muted-foreground">{formatLeadPanelDate(rem.remind_at)}</span>
+                        {rem.done ? (
+                          <span className="text-xs text-emerald-600 dark:text-emerald-400">{t('crm.markDone', 'Done')}</span>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <button type="button" onClick={() => updateReminder(rem.id, { done: true }).then(() => fetchContactReminders(context.contact_id!).then(setReminders))} className="text-xs text-primary hover:underline">{t('crm.markDone', 'Done')}</button>
+                            <button type="button" onClick={() => deleteReminder(rem.id).then(() => fetchContactReminders(context.contact_id!).then(setReminders))} className="text-muted-foreground hover:text-destructive p-0.5" aria-label={t('common.delete')}><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 

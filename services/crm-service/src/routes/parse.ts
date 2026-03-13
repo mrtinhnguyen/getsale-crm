@@ -10,13 +10,14 @@ interface Deps {
   pool: Pool;
   log: Logger;
   bdAccountsClient: ServiceHttpClient;
+  campaignServiceClient: ServiceHttpClient;
   redis: RedisClient | null;
 }
 
 const PARSE_PROGRESS_POLL_MS = 2000;
 const PARSE_SSE_KEEPALIVE_MS = 30000;
 
-export function parseRouter({ pool, log, bdAccountsClient, redis }: Deps): Router {
+export function parseRouter({ pool, log, bdAccountsClient, campaignServiceClient, redis }: Deps): Router {
   const router = Router();
 
   // POST /api/crm/parse/resolve
@@ -36,16 +37,28 @@ export function parseRouter({ pool, log, bdAccountsClient, redis }: Deps): Route
   // POST /api/crm/parse/start
   router.post('/start', validate(ParseStartSchema), asyncHandler(async (req, res) => {
     const { organizationId, id: userId } = req.user as { organizationId: string; id: string };
-    const { sources, settings, accountIds, listName } = req.body;
+    const { sources, settings, accountIds, listName, campaignId: reqCampaignId, campaignName } = req.body;
+
+    let campaignId: string | undefined = reqCampaignId;
+    if (!campaignId && campaignName?.trim()) {
+      try {
+        const createRes = await campaignServiceClient.post<{ id: string }>('/api/campaigns', {
+          name: campaignName.trim(),
+        }, undefined, { organizationId, userId });
+        campaignId = createRes.id;
+      } catch (err: any) {
+        log.warn({ message: 'Failed to create campaign for parse task', error: err?.message });
+        throw new AppError(500, 'Failed to create campaign for export', ErrorCodes.INTERNAL_ERROR);
+      }
+    }
 
     const name = (listName && String(listName).trim()) || `Parse ${randomUUID().slice(0, 8)}`;
     const settingsFinal = settings ?? { depth: 'standard', excludeAdmins: true };
-    const params = {
+    const params: Record<string, unknown> = {
       sources,
       settings: settingsFinal,
       accountIds,
       listName: listName?.trim() || name,
-      // backward compatibility for discovery-loop until it uses sources/strategy
       chats: sources.map((s: { chatId: string; title: string; type: string }) => ({
         chatId: s.chatId,
         title: s.title,
@@ -55,6 +68,7 @@ export function parseRouter({ pool, log, bdAccountsClient, redis }: Deps): Route
       excludeAdmins: settingsFinal.excludeAdmins,
       parseMode: 'all',
       postDepth: 100,
+      ...(campaignId ? { campaignId } : {}),
     };
     const total = sources.length;
     const taskId = randomUUID();
@@ -65,7 +79,7 @@ export function parseRouter({ pool, log, bdAccountsClient, redis }: Deps): Route
       [taskId, organizationId, userId || null, name, total, JSON.stringify(params)]
     );
 
-    res.status(201).json({ taskId });
+    res.status(201).json({ taskId, campaignId: campaignId ?? null });
   }));
 
   // GET /api/crm/parse/progress/:taskId — SSE stream (polls DB)
