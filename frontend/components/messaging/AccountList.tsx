@@ -6,7 +6,7 @@ import {
   Search, Plus, ChevronRight, ChevronLeft, UserCircle,
   CheckCircle2, XCircle,
 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { BDAccountAvatar } from '@/components/messaging/BDAccountAvatar';
 import type { BDAccount } from '@/app/dashboard/messaging/types';

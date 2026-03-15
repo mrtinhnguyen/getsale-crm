@@ -125,7 +125,7 @@ export function nextSendAtWithSchedule(from: Date, delayHours: number, schedule:
   return d;
 }
 
-export function delayHoursFromStep(step: { delay_hours?: number; delay_minutes?: number } | null | undefined): number {
+export function delayHoursFromStep(step: { delay_hours?: number | null; delay_minutes?: number | null } | null | undefined): number {
   if (!step) return 24;
   const h = step.delay_hours ?? 24;
   const m = step.delay_minutes ?? 0;
@@ -162,6 +162,43 @@ export async function ensureLeadInPipeline(
     log.error({ message: 'Pipeline create lead error', error: String(err) });
     return null;
   }
+}
+
+export function getBdAccountDisplayName(account: {
+  display_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  username?: string | null;
+  phone_number?: string | null;
+  telegram_id?: string | null;
+  id: string;
+}): string {
+  return account.display_name?.trim()
+    || [account.first_name, account.last_name].filter(Boolean).map(s => s!.trim()).filter(Boolean).join(' ')
+    || account.username?.trim()
+    || account.phone_number?.trim()
+    || account.telegram_id
+    || account.id.slice(0, 8);
+}
+
+export async function getSentTodayByAccount(pool: Pool, orgId?: string): Promise<Map<string, number>> {
+  const query = orgId
+    ? `SELECT cp.bd_account_id, COUNT(*)::int AS cnt
+       FROM campaign_sends cs
+       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+       JOIN campaigns c ON c.id = cp.campaign_id
+       WHERE c.organization_id = $1 AND cs.sent_at::date = $2::date
+       GROUP BY cp.bd_account_id`
+    : `SELECT cp.bd_account_id, COUNT(*)::int AS cnt
+       FROM campaign_sends cs
+       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+       JOIN campaigns c ON c.id = cp.campaign_id
+       WHERE cs.sent_at::date = $1::date
+       GROUP BY cp.bd_account_id`;
+  const today = new Date().toISOString().slice(0, 10);
+  const params = orgId ? [orgId, today] : [today];
+  const result = await pool.query(query, params);
+  return new Map((result.rows as { bd_account_id: string; cnt: number }[]).map(r => [r.bd_account_id, r.cnt]));
 }
 
 /** Splits a single CSV line by the given delimiter (respects quoted fields). */

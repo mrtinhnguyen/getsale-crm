@@ -7,7 +7,7 @@ import { MessageSquare, StickyNote, Bell } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Deal, Company, Contact, createDeal, updateDeal, fetchCompanies, fetchContacts } from '@/lib/api/crm';
 import { Pipeline, Stage, fetchPipelines, fetchStages } from '@/lib/api/pipeline';
 import { DealChatAvatar } from '@/components/crm/DealChatAvatar';

@@ -25,7 +25,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     if (!contactId) throw new AppError(400, 'contactId is required', ErrorCodes.BAD_REQUEST);
 
     const result = await pool.query(
-      'SELECT l.pipeline_id FROM leads l WHERE l.organization_id = $1 AND l.contact_id = $2',
+      'SELECT l.pipeline_id FROM leads l WHERE l.organization_id = $1 AND l.contact_id = $2 AND l.deleted_at IS NULL',
       [organizationId, contactId]
     );
     res.json({ pipelineIds: result.rows.map((r: Record<string, unknown>) => r.pipeline_id) });
@@ -45,7 +45,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
 
     const params: unknown[] = [organizationId, pipelineId.trim()];
-    let where = 'l.organization_id = $1 AND l.pipeline_id = $2';
+    let where = 'l.organization_id = $1 AND l.pipeline_id = $2 AND l.deleted_at IS NULL';
     if (stageIdTrim) {
       params.push(stageIdTrim);
       where += ` AND l.stage_id = $${params.length}`;
@@ -109,7 +109,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     }
 
     const existing = await pool.query(
-      'SELECT id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3',
+      'SELECT id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3 AND deleted_at IS NULL',
       [organizationId, contactId, pipelineId]
     );
     if (existing.rows.length > 0) {
@@ -149,7 +149,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     const { stageId, orderIndex, responsibleId, revenueAmount } = req.body;
 
     const existing = await pool.query(
-      'SELECT l.*, s.name AS stage_name FROM leads l JOIN stages s ON s.id = l.stage_id WHERE l.id = $1 AND l.organization_id = $2',
+      'SELECT l.*, s.name AS stage_name FROM leads l JOIN stages s ON s.id = l.stage_id WHERE l.id = $1 AND l.organization_id = $2 AND l.deleted_at IS NULL',
       [id, organizationId]
     );
     if (existing.rows.length === 0) throw new AppError(404, 'Lead not found', ErrorCodes.NOT_FOUND);
@@ -251,14 +251,14 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     let leadRow: { id: string; pipeline_id: string; contact_id: string; stage_id: string };
     if (pipelineId) {
       const r = await pool.query(
-        'SELECT id, pipeline_id, contact_id, stage_id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3 LIMIT 1',
+        'SELECT id, pipeline_id, contact_id, stage_id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3 AND deleted_at IS NULL LIMIT 1',
         [organizationId, clientId, pipelineId]
       );
       if (r.rows.length === 0) throw new AppError(404, 'Lead not found for this contact and pipeline', ErrorCodes.NOT_FOUND);
       leadRow = r.rows[0] as { id: string; pipeline_id: string; contact_id: string; stage_id: string };
     } else {
       const r = await pool.query(
-        'SELECT id, pipeline_id, contact_id, stage_id FROM leads WHERE organization_id = $1 AND contact_id = $2 ORDER BY updated_at DESC LIMIT 1',
+        'SELECT id, pipeline_id, contact_id, stage_id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1',
         [organizationId, clientId]
       );
       if (r.rows.length === 0) throw new AppError(404, 'Lead not found for this contact', ErrorCodes.NOT_FOUND);
@@ -278,7 +278,7 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     const { id: leadId } = req.params;
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 100);
 
-    const leadCheck = await pool.query('SELECT 1 FROM leads WHERE id = $1 AND organization_id = $2', [leadId, organizationId]);
+    const leadCheck = await pool.query('SELECT 1 FROM leads WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL', [leadId, organizationId]);
     if (leadCheck.rows.length === 0) throw new AppError(404, 'Lead not found', ErrorCodes.NOT_FOUND);
 
     const rows = await pool.query(
@@ -293,7 +293,10 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
   router.delete('/leads/:id', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM leads WHERE id = $1 AND organization_id = $2 RETURNING id', [id, organizationId]);
+    const result = await pool.query(
+      'UPDATE leads SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL RETURNING id',
+      [id, organizationId]
+    );
     if (result.rows.length === 0) throw new AppError(404, 'Lead not found', ErrorCodes.NOT_FOUND);
     res.status(204).send();
   }));
@@ -318,7 +321,7 @@ async function applyLeadStageChange(
   const { leadId, organizationId, userId, stageId } = params;
 
   const existing = await pool.query(
-    'SELECT l.*, s.name AS stage_name FROM leads l JOIN stages s ON s.id = l.stage_id WHERE l.id = $1 AND l.organization_id = $2',
+    'SELECT l.*, s.name AS stage_name FROM leads l JOIN stages s ON s.id = l.stage_id WHERE l.id = $1 AND l.organization_id = $2 AND l.deleted_at IS NULL',
     [leadId, organizationId]
   );
   if (existing.rows.length === 0) throw new AppError(404, 'Lead not found', ErrorCodes.NOT_FOUND);

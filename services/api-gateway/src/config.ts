@@ -11,6 +11,14 @@ export const ACCESS_TOKEN_COOKIE = 'access_token';
 export const INTERNAL_AUTH_HEADER = 'x-internal-auth';
 export const INTERNAL_AUTH_SECRET = process.env.INTERNAL_AUTH_SECRET?.trim() || '';
 
+if (process.env.NODE_ENV === 'production') {
+  if (!INTERNAL_AUTH_SECRET || INTERNAL_AUTH_SECRET === 'dev_internal_auth_secret') {
+    throw new Error(
+      'INTERNAL_AUTH_SECRET must be set to a non-default value in production. Do not use dev_internal_auth_secret.'
+    );
+  }
+}
+
 export const PORT = parseInt(String(process.env.PORT || 8000), 10);
 
 export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -41,6 +49,3 @@ export const serviceUrls = {
 } as const;
 
 export const CORRELATION_HEADER = 'x-correlation-id';
-export const SSE_HEARTBEAT_MS = 28000;
-/** Max SSE connections per user (prevents exhausting file descriptors). */
-export const SSE_MAX_CONNECTIONS_PER_USER = parseInt(String(process.env.SSE_MAX_CONNECTIONS_PER_USER || 3), 10);

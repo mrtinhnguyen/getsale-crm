@@ -20,7 +20,7 @@ import {
   Calendar,
   Percent,
 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import {
   fetchCampaign,
   fetchCampaignStats,
@@ -50,6 +50,7 @@ import {
   Line,
   ComposedChart,
 } from 'recharts';
+import { safeGetItem, safeSetItem } from '@/lib/safe-storage';
 
 const PRELAUNCH_SEEN_KEY = 'getsale-campaign-prelaunch-seen';
 
@@ -232,7 +233,7 @@ export default function CampaignDetailPage() {
 
   const handleStart = () => {
     if (!id) return;
-    if (typeof window !== 'undefined' && !localStorage.getItem(PRELAUNCH_SEEN_KEY)) {
+    if (!safeGetItem(PRELAUNCH_SEEN_KEY)) {
       setPendingStartAfterModal(true);
       setShowPreLaunchModal(true);
       return;
@@ -242,7 +243,7 @@ export default function CampaignDetailPage() {
 
   const handlePreLaunchClose = () => {
     if (pendingStartAfterModal) {
-      if (typeof window !== 'undefined') localStorage.setItem(PRELAUNCH_SEEN_KEY, '1');
+      safeSetItem(PRELAUNCH_SEEN_KEY, '1');
       setPendingStartAfterModal(false);
       doStart();
     }

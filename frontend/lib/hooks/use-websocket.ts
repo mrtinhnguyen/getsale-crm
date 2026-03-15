@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAuthStore } from '@/lib/stores/auth-store';
+import { reportError, reportWarning } from '@/lib/error-reporter';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3004';
 
@@ -15,13 +16,13 @@ async function fetchWsToken(): Promise<string | null> {
   try {
     const res = await fetch(WS_TOKEN_URL, { credentials: 'include', cache: 'no-store' });
     if (!res.ok) {
-      console.warn('[WebSocket] ws-token request failed:', res.status, res.statusText);
+      reportWarning(`ws-token request failed: ${res.status} ${res.statusText}`, { component: 'useWebSocket', action: 'fetchWsToken' });
       return null;
     }
     const data = (await res.json()) as { token?: string };
     return data.token ?? null;
   } catch (e) {
-    console.warn('[WebSocket] ws-token fetch error:', e);
+    reportWarning(`ws-token fetch error: ${e}`, { component: 'useWebSocket', action: 'fetchWsToken' });
     return null;
   }
 }
@@ -115,7 +116,11 @@ export function useWebSocket() {
           }
         };
         const onConnectError = (err: Error) => {
-          console.error('[WebSocket] Connection error:', err);
+          if (process.env.NODE_ENV === 'development') {
+            reportWarning(err.message, { component: 'useWebSocket', action: 'connect' });
+          } else {
+            reportError(err, { component: 'useWebSocket', action: 'connect' });
+          }
           setError(err.message);
           setIsConnected(false);
         };
@@ -123,7 +128,7 @@ export function useWebSocket() {
           newSocket.emit('pong');
         };
         const onError = (data: { message: string }) => {
-          console.error('[WebSocket] Error:', data);
+          reportError(data.message, { component: 'useWebSocket', action: 'socketError' });
           setError(data.message);
         };
         newSocket.on('connect', onConnect);
@@ -178,7 +183,7 @@ export function useWebSocket() {
     };
 
     const onConnectError = (err: Error) => {
-      console.error('[WebSocket] Connection error:', err);
+      reportError(err, { component: 'useWebSocket', action: 'connect' });
       setError(err.message);
       setIsConnected(false);
     };
@@ -188,7 +193,7 @@ export function useWebSocket() {
     };
 
     const onError = (data: { message: string }) => {
-      console.error('[WebSocket] Error:', data);
+      reportError(data.message, { component: 'useWebSocket', action: 'socketError' });
       setError(data.message);
     };
 

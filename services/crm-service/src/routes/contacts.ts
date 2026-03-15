@@ -27,7 +27,7 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const companyId = typeof req.query.companyId === 'string' ? req.query.companyId : undefined;
 
-    let where = 'WHERE c.organization_id = $1';
+    let where = 'WHERE c.organization_id = $1 AND c.deleted_at IS NULL';
     const params: unknown[] = [organizationId];
 
     if (companyId) {
@@ -66,7 +66,7 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const result = await pool.query(
       `SELECT c.*, co.name AS company_name FROM contacts c
        LEFT JOIN companies co ON c.company_id = co.id
-       WHERE c.id = $1 AND c.organization_id = $2`,
+       WHERE c.id = $1 AND c.organization_id = $2 AND c.deleted_at IS NULL`,
       [req.params.id, organizationId]
     );
     if (result.rows.length === 0) {
@@ -98,6 +98,8 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const errors: { row: number; message: string }[] = [];
     const defaultConsent = JSON.stringify({ email: false, sms: false, telegram: false, marketing: false });
 
+    interface ImportRow { firstName: string | null; lastName: string | null; email: string | null; phone: string | null; telegramId: string | null }
+    const validRows: ImportRow[] = [];
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i];
       const get = (key: string) => {
@@ -114,28 +116,85 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
         errors.push({ row: i + (hasHeader ? 2 : 1), message: 'Each row must have email or telegram_id' });
         continue;
       }
+      validRows.push({ firstName, lastName, email, phone, telegramId });
+    }
 
-      const existing = await pool.query(
-        `SELECT id FROM contacts WHERE organization_id = $1
-         AND (($2::text IS NOT NULL AND telegram_id = $2) OR ($3::text IS NOT NULL AND email = $3)) LIMIT 1`,
-        [organizationId, telegramId || null, email || null]
-      );
+    const BATCH_SIZE = 100;
+    for (let b = 0; b < validRows.length; b += BATCH_SIZE) {
+      const batch = validRows.slice(b, b + BATCH_SIZE);
+      const telegramIds = batch.map(r => r.telegramId).filter(Boolean) as string[];
+      const emails = batch.map(r => r.email).filter(Boolean) as string[];
 
-      if (existing.rows.length > 0) {
-        await pool.query(
-          `UPDATE contacts SET first_name = COALESCE($2, first_name), last_name = COALESCE($3, last_name),
-           email = COALESCE($4, email), phone = COALESCE($5, phone), telegram_id = COALESCE($6, telegram_id),
-           updated_at = NOW() WHERE id = $1 AND organization_id = $7`,
-          [existing.rows[0].id, firstName, lastName, email, phone, telegramId, organizationId]
+      const existingByTg = new Map<string, string>();
+      const existingByEmail = new Map<string, string>();
+
+      if (telegramIds.length > 0) {
+        const r = await pool.query(
+          'SELECT id, telegram_id FROM contacts WHERE organization_id = $1 AND telegram_id = ANY($2::text[])',
+          [organizationId, telegramIds]
         );
-        updated++;
-      } else {
+        for (const row of r.rows as { id: string; telegram_id: string }[]) existingByTg.set(row.telegram_id, row.id);
+      }
+      if (emails.length > 0) {
+        const r = await pool.query(
+          'SELECT id, email FROM contacts WHERE organization_id = $1 AND email = ANY($2::text[])',
+          [organizationId, emails]
+        );
+        for (const row of r.rows as { id: string; email: string }[]) existingByEmail.set(row.email, row.id);
+      }
+
+      const toUpdate: { id: string; row: ImportRow }[] = [];
+      const toInsert: ImportRow[] = [];
+      for (const row of batch) {
+        const existingId = (row.telegramId && existingByTg.get(row.telegramId))
+          || (row.email && existingByEmail.get(row.email))
+          || null;
+        if (existingId) {
+          toUpdate.push({ id: existingId, row });
+        } else {
+          toInsert.push(row);
+        }
+      }
+
+      if (toUpdate.length > 0) {
+        await pool.query(
+          `UPDATE contacts SET
+            first_name = COALESCE(d.first_name, contacts.first_name),
+            last_name = COALESCE(d.last_name, contacts.last_name),
+            email = COALESCE(d.email, contacts.email),
+            phone = COALESCE(d.phone, contacts.phone),
+            telegram_id = COALESCE(d.telegram_id, contacts.telegram_id),
+            updated_at = NOW()
+          FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS first_name,
+                       unnest($3::text[]) AS last_name, unnest($4::text[]) AS email,
+                       unnest($5::text[]) AS phone, unnest($6::text[]) AS telegram_id) AS d
+          WHERE contacts.id = d.id AND contacts.organization_id = $7`,
+          [
+            toUpdate.map(u => u.id),
+            toUpdate.map(u => u.row.firstName),
+            toUpdate.map(u => u.row.lastName),
+            toUpdate.map(u => u.row.email),
+            toUpdate.map(u => u.row.phone),
+            toUpdate.map(u => u.row.telegramId),
+            organizationId,
+          ]
+        );
+        updated += toUpdate.length;
+      }
+
+      if (toInsert.length > 0) {
+        const values: any[] = [];
+        const placeholders = toInsert.map((c, idx) => {
+          const off = idx * 7 + 1;
+          values.push(organizationId, c.firstName, c.lastName, c.email, c.phone, c.telegramId, defaultConsent);
+          return `($${off}, $${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6})`;
+        });
         await pool.query(
           `INSERT INTO contacts (organization_id, first_name, last_name, email, phone, telegram_id, consent_flags)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [organizationId, firstName, lastName, email, phone, telegramId, defaultConsent]
+           VALUES ${placeholders.join(', ')}`,
+          values
         );
-        created++;
+        created += toInsert.length;
       }
     }
 
@@ -169,35 +228,68 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
         { method: 'GET', context: { organizationId, userId: req.user?.id } }
       );
       const users = result?.users ?? [];
-      for (const u of users) {
-        const telegramId = (u.telegram_id || '').trim() || null;
-        if (!telegramId) continue;
-        const existingContact = await pool.query(
-          'SELECT id FROM contacts WHERE organization_id = $1 AND telegram_id = $2 LIMIT 1',
-          [organizationId, telegramId]
+      const validUsers = users
+        .map(u => ({
+          telegramId: (u.telegram_id || '').trim() || null,
+          firstName: (u.first_name ?? '').trim() || 'Contact',
+          lastName: (u.last_name ?? '').trim() || null,
+          username: (u.username ?? '').trim() || null,
+        }))
+        .filter((u): u is { telegramId: string; firstName: string; lastName: string | null; username: string | null } => u.telegramId !== null);
+
+      if (validUsers.length > 0) {
+        const tgIds = validUsers.map(u => u.telegramId);
+        const existingRes = await pool.query(
+          'SELECT id, telegram_id FROM contacts WHERE organization_id = $1 AND telegram_id = ANY($2::text[])',
+          [organizationId, tgIds]
         );
-        let contactId: string;
-        if (existingContact.rows.length > 0) {
-          contactId = existingContact.rows[0].id;
-          matched++;
-        } else {
-          contactId = randomUUID();
-          const firstName = (u.first_name ?? '').trim() || 'Contact';
-          const lastName = (u.last_name ?? '').trim() || null;
-          const username = (u.username ?? '').trim() || null;
+        const existingMap = new Map<string, string>();
+        for (const r of existingRes.rows as { id: string; telegram_id: string }[]) {
+          existingMap.set(r.telegram_id, r.id);
+        }
+
+        const newContacts: { id: string; telegramId: string; firstName: string; lastName: string | null; username: string | null }[] = [];
+        const pageContactIds: string[] = [];
+
+        for (const u of validUsers) {
+          const existingId = existingMap.get(u.telegramId);
+          if (existingId) {
+            pageContactIds.push(existingId);
+            matched++;
+          } else {
+            const newId = randomUUID();
+            pageContactIds.push(newId);
+            newContacts.push({ id: newId, ...u });
+            created++;
+          }
+        }
+
+        if (newContacts.length > 0) {
+          const values: any[] = [];
+          const placeholders = newContacts.map((c, idx) => {
+            const off = idx * 7 + 1;
+            values.push(c.id, organizationId, c.firstName, c.lastName, c.username, c.telegramId, defaultConsent);
+            return `($${off}, $${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6})`;
+          });
           await pool.query(
             `INSERT INTO contacts (id, organization_id, first_name, last_name, username, telegram_id, consent_flags)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [contactId, organizationId, firstName, lastName, username, telegramId, defaultConsent]
+             VALUES ${placeholders.join(', ')}`,
+            values
           );
-          created++;
         }
-        contactIds.push(contactId);
+
+        contactIds.push(...pageContactIds);
+
+        const srcValues: any[] = [organizationId, bdAccountId, telegramChatId, telegramChatTitle ?? null, searchKeyword ?? null];
+        const srcPlaceholders = pageContactIds.map((cId, idx) => {
+          srcValues.push(cId);
+          return `($1, $${idx + 6}, $2, $3, $4, $5)`;
+        });
         await pool.query(
           `INSERT INTO contact_telegram_sources (organization_id, contact_id, bd_account_id, telegram_chat_id, telegram_chat_title, search_keyword)
-           VALUES ($1, $2, $3, $4, $5, $6)
+           VALUES ${srcPlaceholders.join(', ')}
            ON CONFLICT (organization_id, contact_id, bd_account_id, telegram_chat_id) DO NOTHING`,
-          [organizationId, contactId, bdAccountId, telegramChatId, telegramChatTitle ?? null, searchKeyword ?? null]
+          srcValues
         );
       }
       totalFetched += users.length;
@@ -251,7 +343,7 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const { id } = req.params;
     const payload = req.body as Record<string, unknown>;
 
-    const existing = await pool.query('SELECT * FROM contacts WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    const existing = await pool.query('SELECT * FROM contacts WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL', [id, organizationId]);
     if (existing.rows.length === 0) {
       throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
     }
@@ -288,16 +380,29 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const { organizationId } = req.user;
     const { id } = req.params;
 
-    const existing = await pool.query('SELECT 1 FROM contacts WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    const existing = await pool.query('SELECT 1 FROM contacts WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL', [id, organizationId]);
     if (existing.rows.length === 0) {
       throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
     }
 
-    await pool.query(
-      'UPDATE deals SET contact_id = NULL, updated_at = NOW() WHERE contact_id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    await pool.query('DELETE FROM contacts WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE deals SET contact_id = NULL, updated_at = NOW() WHERE contact_id = $1 AND organization_id = $2',
+        [id, organizationId]
+      );
+      await client.query(
+        'UPDATE contacts SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
+        [id, organizationId]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
     res.status(204).send();
   }));
 

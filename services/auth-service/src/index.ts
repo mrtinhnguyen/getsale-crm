@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import { createServiceApp, ServiceHttpClient } from '@getsale/service-core';
 import { RedisClient } from '@getsale/utils';
 import { authRouter } from './routes/auth';
+import { twoFactorRouter } from './routes/two-factor';
 import { organizationRouter } from './routes/organization';
 import { workspacesRouter } from './routes/workspaces';
 import { invitesRouter } from './routes/invites';
@@ -28,6 +29,7 @@ async function main() {
   const deps = { pool, rabbitmq, log, redis, pipelineClient };
 
   ctx.mount('/api/auth', authRouter(deps));
+  ctx.mount('/api/auth/2fa', twoFactorRouter(deps));
   ctx.mount('/api/auth', organizationRouter(deps));
   ctx.mount('/api/auth', workspacesRouter(deps));
   ctx.mount('/api/invite', invitesRouter(deps));

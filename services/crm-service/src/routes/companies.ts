@@ -23,7 +23,7 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const industry = typeof req.query.industry === 'string' ? req.query.industry.trim() : '';
 
-    let where = 'WHERE organization_id = $1';
+    let where = 'WHERE organization_id = $1 AND deleted_at IS NULL';
     const params: unknown[] = [organizationId];
 
     if (search) {
@@ -55,7 +55,7 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
   router.get('/:id', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const result = await pool.query(
-      'SELECT * FROM companies WHERE id = $1 AND organization_id = $2',
+      'SELECT * FROM companies WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [req.params.id, organizationId]
     );
     if (result.rows.length === 0) {
@@ -88,7 +88,7 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
     const { id } = req.params;
 
     const existing = await pool.query(
-      'SELECT * FROM companies WHERE id = $1 AND organization_id = $2',
+      'SELECT * FROM companies WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [id, organizationId]
     );
     if (existing.rows.length === 0) {
@@ -124,7 +124,7 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
     const { id } = req.params;
 
     const existing = await pool.query(
-      'SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2',
+      'SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [id, organizationId]
     );
     if (existing.rows.length === 0) {
@@ -139,11 +139,24 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
       throw new AppError(409, 'Cannot delete company that has deals. Move or delete deals first.', ErrorCodes.CONFLICT);
     }
 
-    await pool.query(
-      'UPDATE contacts SET company_id = NULL, updated_at = NOW() WHERE company_id = $1 AND organization_id = $2',
-      [id, organizationId]
-    );
-    await pool.query('DELETE FROM companies WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE contacts SET company_id = NULL, updated_at = NOW() WHERE company_id = $1 AND organization_id = $2',
+        [id, organizationId]
+      );
+      await client.query(
+        'UPDATE companies SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
+        [id, organizationId]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
     res.status(204).send();
   }));
 

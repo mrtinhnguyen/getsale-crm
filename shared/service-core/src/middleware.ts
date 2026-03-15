@@ -18,6 +18,8 @@ declare global {
     interface Request {
       user: ServiceUser;
       correlationId: string;
+      /** Raw request body buffer, preserved before JSON parsing (needed for webhook signature verification). */
+      rawBody?: Buffer;
     }
   }
 }

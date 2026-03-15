@@ -6,6 +6,10 @@ export interface HttpClientOptions {
   retries?: number;
   retryDelayMs?: number;
   name: string;
+  /** Number of consecutive 5xx/timeout failures before the circuit opens (default 5) */
+  circuitBreakerThreshold?: number;
+  /** Time in ms the circuit stays open before allowing a probe request (default 30 000) */
+  circuitBreakerResetMs?: number;
 }
 
 /** Optional context to forward to downstream services for attribution and tracing */
@@ -25,6 +29,41 @@ interface RequestOptions {
   context?: RequestContext;
 }
 
+class CircuitBreaker {
+  private failures = 0;
+  private lastFailure = 0;
+  private state: 'closed' | 'open' | 'half-open' = 'closed';
+
+  constructor(
+    private threshold: number = 5,
+    private resetTimeout: number = 30_000,
+  ) {}
+
+  getState(): 'closed' | 'open' | 'half-open' {
+    return this.state;
+  }
+
+  recordSuccess(): void {
+    this.failures = 0;
+    this.state = 'closed';
+  }
+
+  recordFailure(): void {
+    this.failures++;
+    this.lastFailure = Date.now();
+    if (this.failures >= this.threshold) this.state = 'open';
+  }
+
+  canExecute(): boolean {
+    if (this.state === 'closed') return true;
+    if (this.state === 'open' && Date.now() - this.lastFailure > this.resetTimeout) {
+      this.state = 'half-open';
+      return true;
+    }
+    return this.state === 'half-open';
+  }
+}
+
 export class ServiceHttpClient {
   private baseUrl: string;
   private defaultTimeout: number;
@@ -33,6 +72,8 @@ export class ServiceHttpClient {
   private name: string;
   private log: Logger;
   private internalAuthSecret: string;
+  private circuitBreaker: CircuitBreaker;
+  defaultContext?: RequestContext;
 
   constructor(options: HttpClientOptions, log: Logger) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
@@ -42,12 +83,48 @@ export class ServiceHttpClient {
     this.name = options.name;
     this.log = log;
     this.internalAuthSecret = process.env.INTERNAL_AUTH_SECRET?.trim() || '';
+    this.circuitBreaker = new CircuitBreaker(
+      options.circuitBreakerThreshold ?? 5,
+      options.circuitBreakerResetMs ?? 30_000,
+    );
+  }
+
+  /**
+   * Create a client pre-bound to the current request's user/org/correlation context.
+   * Calls made through the returned client automatically propagate these headers
+   * unless overridden per-call.
+   */
+  static fromRequest(
+    req: { user?: { id?: string; organizationId?: string; role?: string }; correlationId?: string },
+    options: HttpClientOptions,
+    log: Logger,
+  ): ServiceHttpClient {
+    const client = new ServiceHttpClient(options, log);
+    client.defaultContext = {
+      userId: req.user?.id,
+      organizationId: req.user?.organizationId,
+      userRole: req.user?.role,
+      correlationId: req.correlationId,
+    };
+    return client;
   }
 
   async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const method = options.method ?? 'GET';
     const timeout = options.timeoutMs ?? this.defaultTimeout;
+
+    if (!this.circuitBreaker.canExecute()) {
+      this.log.warn({
+        message: `${this.name} circuit breaker OPEN — request rejected`,
+        http_method: method,
+        http_path: path,
+      });
+      throw new ServiceCallError(
+        `${this.name} circuit breaker is open — ${method} ${path} rejected`,
+        503,
+      );
+    }
 
     let lastError: Error | undefined;
 
@@ -63,7 +140,7 @@ export class ServiceHttpClient {
         if (this.internalAuthSecret && !hdrs['x-internal-auth']) {
           hdrs['x-internal-auth'] = this.internalAuthSecret;
         }
-        const ctx = options.context;
+        const ctx = options.context ?? this.defaultContext;
         if (ctx) {
           if (ctx.userId) hdrs['x-user-id'] = ctx.userId;
           if (ctx.organizationId) hdrs['x-organization-id'] = ctx.organizationId;
@@ -84,13 +161,6 @@ export class ServiceHttpClient {
           let parsed: unknown;
           try { parsed = JSON.parse(body); } catch { parsed = body; }
 
-          if (res.status >= 400 && res.status < 500) {
-            throw new ServiceCallError(
-              `${this.name} ${method} ${path} returned ${res.status}`,
-              res.status,
-              parsed
-            );
-          }
           throw new ServiceCallError(
             `${this.name} ${method} ${path} returned ${res.status}`,
             res.status,
@@ -99,6 +169,7 @@ export class ServiceHttpClient {
         }
 
         const data = await res.json() as T;
+        this.circuitBreaker.recordSuccess();
         return data;
       } catch (err: unknown) {
         clearTimeout(timer);
@@ -108,7 +179,17 @@ export class ServiceHttpClient {
           throw err;
         }
 
+        this.circuitBreaker.recordFailure();
+
         if (attempt < this.retries) {
+          if (!this.circuitBreaker.canExecute()) {
+            this.log.warn({
+              message: `${this.name} circuit breaker tripped during retries — aborting`,
+              http_method: method,
+              http_path: path,
+            });
+            break;
+          }
           const delay = this.retryDelay * Math.pow(2, attempt);
           this.log.warn({
             message: `${this.name} call failed, retrying`,
@@ -127,6 +208,7 @@ export class ServiceHttpClient {
       message: `${this.name} call failed after ${this.retries + 1} attempts`,
       http_method: method,
       http_path: path,
+      circuit_state: this.circuitBreaker.getState(),
       error: lastError?.message,
     });
 

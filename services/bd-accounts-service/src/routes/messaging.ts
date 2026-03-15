@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
-import { TelegramManager } from '../telegram-manager';
+import { TelegramManager } from '../telegram';
 import { serializeMessage } from '../telegram-serialize';
 import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, getAccountOr404, requireBidiCanWriteAccount } from '../helpers';
 

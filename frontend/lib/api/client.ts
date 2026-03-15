@@ -1,11 +1,9 @@
 import axios from 'axios';
 import { useAuthStore } from '@/lib/stores/auth-store';
+import { authApi } from '@/lib/api/auth';
 
-// In the browser use same origin so all requests (including refresh) go to the app origin;
-// Next.js rewrites /api/* to the gateway and cookies are set/sent for the same domain.
 const API_URL =
   typeof window !== 'undefined' ? '' : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
-const GATEWAY_URL = API_URL;
 
 export const apiClient = axios.create({
   baseURL: API_URL,
@@ -59,11 +57,9 @@ apiClient.interceptors.response.use(
     apiClientRefreshing = true;
 
     try {
-      // Refresh via same origin so Set-Cookie is attributed to the app domain (Next.js rewrites to gateway).
-      const refreshRes = await axios.post<{ user: { id: string; email: string; organizationId: string; role: string } }>(
-        `${GATEWAY_URL}/api/auth/refresh`,
-        {},
-        { withCredentials: true }
+      const refreshRes = await authApi.post<{ user: { id: string; email: string; organizationId: string; role: string } }>(
+        '/refresh',
+        {}
       );
       const user = refreshRes.data?.user;
       if (user) useAuthStore.setState({ user });

@@ -131,6 +131,8 @@
     "activityDealCreated": "created a deal",
     "activityLeadConverted": "converted a lead",
     "activityDiscoveryStarted": "started discovery/parsing",
+    "upcomingReminders": "Upcoming reminders",
+    "allReminders": "All reminders in CRM",
     "quickActions": "Quick actions",
     "createCompany": "Create company",
     "addContact": "Add contact",
@@ -192,6 +194,7 @@
     "importEmail": "Email",
     "importPhone": "Phone",
     "importTelegramId": "Telegram ID",
+    "importColumn": "Col. {{num}}",
     "importMapping": "Column mapping",
     "importCreated": "Created",
     "importUpdated": "Updated",
@@ -1077,7 +1080,19 @@
     "download": "Download",
     "mediaAudio": "Audio",
     "mediaUnknown": "Attachment",
-    "aiChatStubText": "Chat with assistant will appear here (placeholder)."
+    "aiChatStubText": "Chat with assistant will appear here (placeholder).",
+    "selectChat": "Select a chat",
+    "selectChatDesc": "Select a chat from the list to start a conversation",
+    "cancelRecording": "Cancel",
+    "copySuccess": "Copied",
+    "broadcastToGroups": "Broadcast to groups",
+    "broadcastSelectGroups": "Select groups and enter a message",
+    "message": "Message",
+    "typeMessage": "Type a message...",
+    "sent": "Sent",
+    "failed": "Errors",
+    "sendToGroups": "Send to selected",
+    "noGroupsSynced": "No group chats"
   },
   "onboarding": {
     "welcome": "Welcome to GetSale CRM",
@@ -1095,5 +1110,17 @@
     "previous": "Back",
     "goToStep": "Go to {{step}}",
     "runAgain": "Run onboarding"
+  },
+  "errors": {
+    "globalTitle": "Something went wrong",
+    "globalDescription": "An unexpected error occurred. Try refreshing the page.",
+    "tryAgain": "Try again",
+    "goHome": "Go home",
+    "dashboardTitle": "Section error",
+    "dashboardDescription": "An error occurred while loading this section.",
+    "goToDashboard": "Go to dashboard",
+    "notFoundTitle": "Page not found",
+    "notFoundDescription": "The requested page does not exist or has been moved.",
+    "errorCode": "Error code: {{digest}}"
   }
 }

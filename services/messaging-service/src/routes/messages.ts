@@ -13,6 +13,7 @@ import {
   ServiceHttpClient,
   ServiceCallError,
 } from '@getsale/service-core';
+import { SYSTEM_MESSAGES } from '../system-messages';
 import {
   ensureConversation,
   ALLOWED_EMOJI,
@@ -22,6 +23,7 @@ import {
   URL_REGEX,
   isUrlAllowedForUnfurl,
 } from '../helpers';
+import type { MessageRow, HistoryExhaustedRow, QueryParam } from '../types';
 
 interface Deps {
   pool: Pool;
@@ -69,7 +71,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
           'SELECT history_exhausted FROM bd_account_sync_chats WHERE bd_account_id = $1 AND telegram_chat_id = $2 LIMIT 1',
           [bdId, chId]
         );
-        const exhausted = exhaustedRow.rows.length > 0 && (exhaustedRow.rows[0] as any).history_exhausted === true;
+        const exhausted = exhaustedRow.rows.length > 0 && (exhaustedRow.rows[0] as HistoryExhaustedRow).history_exhausted === true;
         if (!exhausted) {
           try {
             await bdAccountsClient.post(
@@ -96,7 +98,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
           'SELECT history_exhausted FROM bd_account_sync_chats WHERE bd_account_id = $1 AND telegram_chat_id = $2 LIMIT 1',
           [bdId, chId]
         );
-        const exhausted = exhaustedRow.rows.length > 0 && (exhaustedRow.rows[0] as any).history_exhausted === true;
+        const exhausted = exhaustedRow.rows.length > 0 && (exhaustedRow.rows[0] as HistoryExhaustedRow).history_exhausted === true;
         if (!exhausted) {
           try {
             const data = await bdAccountsClient.post<{ added?: number }>(
@@ -119,16 +121,16 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     }
 
     let query = 'SELECT * FROM messages WHERE organization_id = $1';
-    const params: any[] = [organizationId];
+    const params: QueryParam[] = [organizationId];
 
     if (contactId) {
       query += ` AND contact_id = $${params.length + 1}`;
-      params.push(contactId);
+      params.push(String(contactId));
     }
 
     if (channel && channelId) {
       query += ` AND channel = $${params.length + 1} AND channel_id = $${params.length + 2}`;
-      params.push(channel, channelId);
+      params.push(String(channel), String(channelId));
     }
 
     if (bdId) {
@@ -141,7 +143,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     params.push(limitNum, offset);
 
     const result = await pool.query(query, params);
-    let rows = (result.rows as any[]).slice().reverse();
+    let rows = (result.rows as MessageRow[]).slice().reverse();
 
     if (bdId && chId && rows.length > 0) {
       const peerRow = await pool.query(
@@ -151,8 +153,8 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
       const peerType = peerRow.rows[0] as { peer_type: string } | undefined;
       if (peerType && (peerType.peer_type === 'chat' || peerType.peer_type === 'channel')) {
         const inboundContactIds = [...new Set(
-          (rows as any[]).filter((r) => r.direction === 'inbound' && r.contact_id).map((r) => r.contact_id)
-        )] as string[];
+          rows.filter((r) => r.direction === 'inbound' && r.contact_id).map((r) => r.contact_id as string)
+        )];
         let senderNames: Record<string, string> = {};
         if (inboundContactIds.length > 0) {
           const contactsRes = await pool.query(
@@ -173,14 +175,14 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     }
 
     let countQuery = 'SELECT COUNT(*) FROM messages WHERE organization_id = $1';
-    const countParams: any[] = [organizationId];
+    const countParams: QueryParam[] = [organizationId];
     if (contactId) {
       countQuery += ` AND contact_id = $${countParams.length + 1}`;
-      countParams.push(contactId);
+      countParams.push(String(contactId));
     }
     if (channel && channelId) {
       countQuery += ` AND channel = $${countParams.length + 1} AND channel_id = $${countParams.length + 2}`;
-      countParams.push(channel, channelId);
+      countParams.push(String(channel), String(channelId));
     }
     if (bdId) {
       countQuery += ` AND bd_account_id = $${countParams.length + 1}`;
@@ -195,11 +197,11 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
         'SELECT history_exhausted FROM bd_account_sync_chats WHERE bd_account_id = $1 AND telegram_chat_id = $2 LIMIT 1',
         [bdId, chId]
       );
-      historyExhausted = exRow.rows.length > 0 ? (exRow.rows[0] as any).history_exhausted === true : undefined;
+      historyExhausted = exRow.rows.length > 0 ? (exRow.rows[0] as HistoryExhaustedRow).history_exhausted === true : undefined;
     }
 
     const payload: {
-      messages: any[];
+      messages: MessageRow[];
       pagination: { page: number; limit: number; total: number; totalPages: number };
       historyExhausted?: boolean;
     } = {
@@ -262,7 +264,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const contactRow = contactResult.rows[0] as { id: string; first_name?: string; last_name?: string; username?: string };
 
     const captionOrContent = typeof content === 'string' ? content : '';
-    const contentForDb = captionOrContent || (fileName ? `[Файл: ${fileName}]` : '[Медиа]');
+    const contentForDb = captionOrContent || (fileName ? SYSTEM_MESSAGES.FILE_PLACEHOLDER(fileName) : SYSTEM_MESSAGES.MEDIA_PLACEHOLDER);
     const replyToTgId = replyToMessageId != null && String(replyToMessageId).trim() ? String(replyToMessageId).trim() : null;
 
     await ensureConversation(pool, {
@@ -364,15 +366,16 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
         } catch (syncErr) {
           log.warn({ message: 'Failed to upsert bd_account_sync_chats', error: syncErr instanceof Error ? syncErr.message : String(syncErr) });
         }
-      } catch (error: any) {
-        log.error({ message: 'Error sending Telegram message', error: String(error) });
+      } catch (error: unknown) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        log.error({ message: 'Error sending Telegram message', error: errMsg });
         await pool.query('UPDATE messages SET status = $1, metadata = $2 WHERE id = $3', [
           MessageStatus.FAILED,
-          JSON.stringify({ error: error.message }),
+          JSON.stringify({ error: errMsg }),
           message.id,
         ]);
         const is413 = (error instanceof ServiceCallError && error.statusCode === 413)
-          || (error.message && (error.message.toLowerCase().includes('too large') || error.message.includes('2 GB')));
+          || (errMsg.toLowerCase().includes('too large') || errMsg.includes('2 GB'));
         return res.status(is413 ? 413 : 500).json({
           error: is413 ? 'File too large' : 'Internal server error',
           message: is413 ? 'File too large' : 'Failed to send message',
@@ -447,7 +450,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
           },
           { 'x-user-id': userId, 'x-organization-id': organizationId }
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         log.error({ message: 'Error deleting message in Telegram', error: String(err) });
         return res.status(502).json({
           error: 'Failed to delete in Telegram',
@@ -616,7 +619,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
       }
       const chunks: Buffer[] = [];
       let total = 0;
-      const reader = (response.body as any).getReader();
+      const reader = (response.body as ReadableStream<Uint8Array>).getReader();
       try {
         while (total < UNFURL_MAX_BODY) {
           const { done, value } = await reader.read();
@@ -641,7 +644,7 @@ export function messagesRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
       let image: string | null = ogImage ? ogImage.replace(/&amp;/g, '&').trim() : null;
       if (image && !/^https?:\/\//i.test(image)) image = new URL(image, rawUrl).href;
       res.json({ title, description, image });
-    } catch (err: any) {
+    } catch {
       clearTimeout(timeout);
       res.json({ title: null, description: null, image: null });
     }

@@ -77,7 +77,7 @@ describe('Auth Router', () => {
       const res = await request(app)
         .post('/api/auth/signup')
         .set('content-type', 'application/json')
-        .send({ email: 'new@example.com', password: 'password123' });
+        .send({ email: 'new@example.com', password: 'Password123' });
 
       expect(res.status).toBe(200);
       expect(res.body.user).toMatchObject({ email: 'new@example.com', id: TEST_USER_ID });

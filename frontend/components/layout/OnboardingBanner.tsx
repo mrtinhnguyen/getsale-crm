@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
 import { X, Building2, MessageSquare, TrendingUp, Sparkles } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 
 const STORAGE_KEY = 'getsale-onboarding-dismissed';
 

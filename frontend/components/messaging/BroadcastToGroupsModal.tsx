@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { apiClient } from '@/lib/api/client';
 import { fetchGroupSources, type GroupSource } from '@/lib/api/campaigns';
 

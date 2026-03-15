@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { createServiceApp } from '@getsale/service-core';
 import { profileRouter } from './routes/profiles';
 import { subscriptionRouter } from './routes/subscription';
+import { stripeWebhookRouter } from './routes/stripe-webhook';
 import { teamRouter } from './routes/team';
 
 async function main() {
@@ -15,6 +16,7 @@ async function main() {
   const deps = { pool, rabbitmq, log };
   ctx.mount('/api/users', profileRouter(deps));
   ctx.mount('/api/users', subscriptionRouter({ ...deps, stripe }));
+  ctx.mount('/api/users/stripe-webhook', stripeWebhookRouter({ ...deps, stripe }));
   ctx.mount('/api/users', teamRouter(deps));
 
   ctx.start();

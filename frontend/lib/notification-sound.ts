@@ -1,10 +1,40 @@
 const NOTIFICATION_SOUND_PATH = '/notification.wav';
 
-/** Короткий звук уведомления (Web Audio API) */
+let sharedContext: AudioContext | null = null;
+
+function getAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  if (!sharedContext) {
+    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (Ctor) sharedContext = new Ctor();
+  }
+  return sharedContext;
+}
+
+/** Run callback once after the next user gesture (required for AudioContext on modern browsers). */
+function afterFirstUserGesture(cb: () => void): void {
+  const run = () => {
+    document.removeEventListener('click', run);
+    document.removeEventListener('keydown', run);
+    document.removeEventListener('touchstart', run);
+    cb();
+  };
+  document.addEventListener('click', run, { once: true });
+  document.addEventListener('keydown', run, { once: true });
+  document.addEventListener('touchstart', run, { once: true });
+}
+
+/** Короткий звук уведомления (Web Audio API). Не воспроизводит, пока контекст не разблокирован жестом. */
 function playBeepNotification(): void {
-  if (typeof window === 'undefined') return;
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    afterFirstUserGesture(() => {
+      ctx.resume().then(() => playBeepNotification()).catch(() => {});
+    });
+    return;
+  }
   try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -18,7 +48,7 @@ function playBeepNotification(): void {
   } catch (_) {}
 }
 
-/** Воспроизвести звук уведомления: MP3 или «динг» */
+/** Воспроизвести звук уведомления: WAV или «динг» (fallback). */
 export function playNotificationSound(): void {
   if (typeof window === 'undefined') return;
   const audio = new Audio(NOTIFICATION_SOUND_PATH);

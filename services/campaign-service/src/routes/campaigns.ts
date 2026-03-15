@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
-import { EventType } from '@getsale/events';
+import { EventType, Event } from '@getsale/events';
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
-import { parseCsv } from '../helpers';
-import { CampaignCreateSchema, CampaignPatchSchema, FromCsvBodySchema, ParticipantsBulkSchema } from '../validation';
+import { parseCsv, getBdAccountDisplayName, getSentTodayByAccount } from '../helpers';
+import { CampaignCreateSchema, CampaignPatchSchema, FromCsvBodySchema, ParticipantsBulkSchema, PresetCreateSchema } from '../validation';
+import type { QueryParam, CampaignRow, CampaignCountRow, CampaignRevenueRow, BdAccountRow } from '../types';
 
 interface Deps {
   pool: Pool;
@@ -26,8 +27,8 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const limit = Math.min(100, Math.max(1, parseInt(String(limitRaw || '20'), 10) || 20));
     const offset = (page - 1) * limit;
 
-    let whereClause = 'WHERE c.organization_id = $1';
-    const params: (string | number)[] = [organizationId];
+    let whereClause = 'WHERE c.organization_id = $1 AND c.deleted_at IS NULL';
+    const params: QueryParam[] = [organizationId];
     if (status && typeof status === 'string') {
       params.push(status);
       whereClause += ` AND c.status = $${params.length}`;
@@ -98,30 +99,21 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
         : Promise.resolve({ rows: [] }),
     ]);
 
-    const sentMap = new Map((sentRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
-    const repliedMap = new Map((repliedRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
-    const sharedMap = new Map((sharedRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
-    const readMap = new Map((readRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
-    const wonMap = new Map((wonRes.rows as { campaign_id: string; cnt: number }[]).map((r) => [r.campaign_id, r.cnt]));
-    const revenueMap = new Map((revenueRes.rows as { campaign_id: string; total: string }[]).map((r) => [r.campaign_id, Number(r.total)]));
+    const sentMap = new Map((sentRes.rows as CampaignCountRow[]).map((r) => [r.campaign_id, r.cnt]));
+    const repliedMap = new Map((repliedRes.rows as CampaignCountRow[]).map((r) => [r.campaign_id, r.cnt]));
+    const sharedMap = new Map((sharedRes.rows as CampaignCountRow[]).map((r) => [r.campaign_id, r.cnt]));
+    const readMap = new Map((readRes.rows as CampaignCountRow[]).map((r) => [r.campaign_id, r.cnt]));
+    const wonMap = new Map((wonRes.rows as CampaignCountRow[]).map((r) => [r.campaign_id, r.cnt]));
+    const revenueMap = new Map((revenueRes.rows as CampaignRevenueRow[]).map((r) => [r.campaign_id, Number(r.total)]));
     const bdAccountNameMap = new Map(
-      (bdAccountsRes.rows as { id: string; display_name: string | null; first_name: string | null; last_name: string | null; username: string | null; phone_number: string | null; telegram_id: string | null }[])
-        .map((a) => [
-          a.id,
-          a.display_name?.trim()
-            || [a.first_name, a.last_name].filter(Boolean).map(s => s!.trim()).filter(Boolean).join(' ')
-            || a.username?.trim()
-            || a.phone_number?.trim()
-            || a.telegram_id
-            || a.id.slice(0, 8),
-        ])
+      (bdAccountsRes.rows as BdAccountRow[]).map((a) => [a.id, getBdAccountDisplayName(a)])
     );
 
     let summaryTotalSent = 0;
     let summaryTotalReplied = 0;
     let summaryTotalWon = 0;
 
-    const withKpi = campaigns.map((c: any) => {
+    const withKpi = campaigns.map((c) => {
       const sent = sentMap.get(c.id) ?? 0;
       const replied = repliedMap.get(c.id) ?? 0;
       const won = wonMap.get(c.id) ?? 0;
@@ -159,25 +151,10 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
        ORDER BY a.display_name NULLS LAST, a.phone_number`,
       [organizationId]
     );
-    const today = new Date().toISOString().slice(0, 10);
-    const sentToday = await pool.query(
-      `SELECT cp.bd_account_id, COUNT(*)::int AS sent_today
-       FROM campaign_sends cs
-       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
-       JOIN campaigns c ON c.id = cp.campaign_id
-       WHERE c.organization_id = $1 AND cs.sent_at::date = $2::date
-       GROUP BY cp.bd_account_id`,
-      [organizationId, today]
-    );
-    const sentMap = new Map((sentToday.rows as { bd_account_id: string; sent_today: number }[]).map((r) => [r.bd_account_id, r.sent_today]));
+    const sentMap = await getSentTodayByAccount(pool, organizationId);
     const result = accounts.rows.map((a: { id: string; display_name: string | null; first_name: string | null; last_name: string | null; username: string | null; phone_number: string | null; telegram_id: string | null }) => ({
       id: a.id,
-      displayName: a.display_name?.trim()
-        || [a.first_name, a.last_name].filter(Boolean).map(s => s!.trim()).filter(Boolean).join(' ')
-        || a.username?.trim()
-        || a.phone_number?.trim()
-        || a.telegram_id
-        || a.id.slice(0, 8),
+      displayName: getBdAccountDisplayName(a),
       sentToday: sentMap.get(a.id) ?? 0,
     }));
     res.json(result);
@@ -195,12 +172,9 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  router.post('/presets', asyncHandler(async (req, res) => {
+  router.post('/presets', validate(PresetCreateSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { name, channel, content } = req.body;
-    if (!name || typeof name !== 'string' || !content || typeof content !== 'string') {
-      throw new AppError(400, 'Name and content are required', ErrorCodes.VALIDATION);
-    }
     const id = randomUUID();
     await pool.query(
       `INSERT INTO campaign_templates (id, organization_id, campaign_id, name, channel, content)
@@ -287,7 +261,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       FROM contacts c
       WHERE c.organization_id = $1 AND c.telegram_id IS NOT NULL AND c.telegram_id != ''
     `;
-    const params: any[] = [organizationId];
+    const params: QueryParam[] = [organizationId];
     let idx = 2;
     if (sourceKeyword && typeof sourceKeyword === 'string' && sourceKeyword.trim()) {
       query += ` AND EXISTS (SELECT 1 FROM contact_telegram_sources cts WHERE cts.contact_id = c.id AND cts.organization_id = c.organization_id AND cts.search_keyword = $${idx})`;
@@ -326,7 +300,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
     const campaignRes = await pool.query(
-      'SELECT * FROM campaigns WHERE id = $1 AND organization_id = $2',
+      'SELECT * FROM campaigns WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [id, organizationId]
     );
     if (campaignRes.rows.length === 0) {
@@ -390,7 +364,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
         organizationId,
         userId,
         data: { campaignId: id },
-      } as any);
+      } as unknown as Event);
     } catch (err) {
       log.warn({ message: 'CAMPAIGN_CREATED publish failed', campaignId: id, error: err instanceof Error ? err.message : String(err) });
     }
@@ -403,7 +377,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { name, companyId, pipelineId, targetAudience, schedule, status, leadCreationSettings } = req.body;
 
     const existing = await pool.query(
-      'SELECT * FROM campaigns WHERE id = $1 AND organization_id = $2',
+      'SELECT * FROM campaigns WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [id, organizationId]
     );
     if (existing.rows.length === 0) {
@@ -425,7 +399,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     }
 
     const updates: string[] = ['updated_at = NOW()'];
-    const params: any[] = [];
+    const params: QueryParam[] = [];
     let idx = 1;
     if (name !== undefined) {
       params.push(typeof name === 'string' ? name.trim() : name);
@@ -470,7 +444,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { organizationId } = req.user;
     const { id } = req.params;
     const existing = await pool.query(
-      'SELECT status FROM campaigns WHERE id = $1 AND organization_id = $2',
+      'SELECT status FROM campaigns WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
       [id, organizationId]
     );
     if (existing.rows.length === 0) {
@@ -480,7 +454,10 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     if (status === CampaignStatus.ACTIVE) {
       throw new AppError(400, 'Cannot delete active campaign; pause it first', ErrorCodes.BAD_REQUEST);
     }
-    await pool.query('DELETE FROM campaigns WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    await pool.query(
+      'UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
+      [id, organizationId]
+    );
     res.status(204).send();
   }));
 
@@ -515,6 +492,12 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
 
     const contactIds: string[] = [];
     let created = 0, matched = 0;
+
+    interface CsvContactRow {
+      telegramId: string | null; email: string | null; username: string | null;
+      firstName: string; lastName: string | null; phone: string | null;
+    }
+    const validRows: CsvContactRow[] = [];
     for (const row of dataRows) {
       const telegramId = idxTelegram >= 0 ? (row[idxTelegram] || '').trim().replace(/^@/, '') || null : null;
       const email = idxEmail >= 0 ? (row[idxEmail] || '').trim() || null : null;
@@ -523,40 +506,74 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       const lastName = idxLast >= 0 ? (row[idxLast] || '').trim() || null : null;
       const phone = idxPhone >= 0 ? (row[idxPhone] || '').trim() || null : null;
       if (!telegramId && !email && !username) continue;
-      let contact: { id: string } | null = null;
-      if (telegramId) {
+      validRows.push({ telegramId, email, username, firstName, lastName, phone });
+    }
+
+    const BATCH_SIZE = 100;
+    for (let b = 0; b < validRows.length; b += BATCH_SIZE) {
+      const batch = validRows.slice(b, b + BATCH_SIZE);
+      const telegramIds = batch.map(r => r.telegramId).filter(Boolean) as string[];
+      const emails = batch.map(r => r.email).filter(Boolean) as string[];
+      const usernames = batch.map(r => r.username).filter(Boolean) as string[];
+
+      const matchByTg = new Map<string, string>();
+      const matchByEmail = new Map<string, string>();
+      const matchByUsername = new Map<string, string>();
+
+      if (telegramIds.length > 0) {
         const r = await pool.query(
-          'SELECT id FROM contacts WHERE organization_id = $1 AND telegram_id = $2 LIMIT 1',
-          [orgId, telegramId]
+          'SELECT id, telegram_id FROM contacts WHERE organization_id = $1 AND telegram_id = ANY($2::text[])',
+          [orgId, telegramIds]
         );
-        contact = r.rows[0] || null;
+        for (const row of r.rows as { id: string; telegram_id: string }[]) matchByTg.set(row.telegram_id, row.id);
       }
-      if (!contact && email) {
+      if (emails.length > 0) {
         const r = await pool.query(
-          'SELECT id FROM contacts WHERE organization_id = $1 AND email = $2 LIMIT 1',
-          [orgId, email]
+          'SELECT id, email FROM contacts WHERE organization_id = $1 AND email = ANY($2::text[])',
+          [orgId, emails]
         );
-        contact = r.rows[0] || null;
+        for (const row of r.rows as { id: string; email: string }[]) matchByEmail.set(row.email, row.id);
       }
-      if (!contact && username) {
+      if (usernames.length > 0) {
         const r = await pool.query(
-          'SELECT id FROM contacts WHERE organization_id = $1 AND username = $2 LIMIT 1',
-          [orgId, username]
+          'SELECT id, username FROM contacts WHERE organization_id = $1 AND username = ANY($2::text[])',
+          [orgId, usernames]
         );
-        contact = r.rows[0] || null;
+        for (const row of r.rows as { id: string; username: string }[]) matchByUsername.set(row.username, row.id);
       }
-      if (contact) {
-        matched++;
-        contactIds.push(contact.id);
-      } else {
-        const newId = randomUUID();
+
+      const toInsert: CsvContactRow[] = [];
+      const insertIds: string[] = [];
+
+      for (const row of batch) {
+        const existingId = (row.telegramId && matchByTg.get(row.telegramId))
+          || (row.email && matchByEmail.get(row.email))
+          || (row.username && matchByUsername.get(row.username))
+          || null;
+        if (existingId) {
+          matched++;
+          contactIds.push(existingId);
+        } else {
+          const newId = randomUUID();
+          insertIds.push(newId);
+          toInsert.push(row);
+          contactIds.push(newId);
+        }
+      }
+
+      if (toInsert.length > 0) {
+        const values: QueryParam[] = [];
+        const placeholders = toInsert.map((c, idx) => {
+          const off = idx * 8 + 1;
+          values.push(insertIds[idx], orgId, c.firstName, c.lastName, c.email, c.phone, c.telegramId, c.username);
+          return `($${off}, $${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6}, $${off + 7}, NOW(), NOW())`;
+        });
         await pool.query(
           `INSERT INTO contacts (id, organization_id, first_name, last_name, email, phone, telegram_id, username, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
-          [newId, orgId, firstName, lastName || null, email || null, phone || null, telegramId || null, username || null]
+           VALUES ${placeholders.join(', ')}`,
+          values
         );
-        created++;
-        contactIds.push(newId);
+        created += toInsert.length;
       }
     }
     res.json({ contactIds, created, matched });
@@ -587,7 +604,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       const batch = contactIds.slice(i, i + batchSize);
       
       const values: string[] = [];
-      const params: any[] = [id];
+      const params: QueryParam[] = [id];
       let pIdx = 2;
 
       for (const cid of batch) {

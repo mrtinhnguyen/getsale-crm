@@ -74,7 +74,14 @@ export const ParticipantsBulkSchema = z.object({
   bdAccountId: z.string().uuid().optional(),
 });
 
+export const PresetCreateSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(500).trim(),
+  channel: z.string().max(64).optional().default('telegram'),
+  content: z.string().min(1, 'Content is required').max(50_000),
+});
+
 export type CampaignCreateInput = z.infer<typeof CampaignCreateSchema>;
 export type CampaignPatchInput = z.infer<typeof CampaignPatchSchema>;
 export type FromCsvBodyInput = z.infer<typeof FromCsvBodySchema>;
 export type ParticipantsBulkInput = z.infer<typeof ParticipantsBulkSchema>;
+export type PresetCreateInput = z.infer<typeof PresetCreateSchema>;

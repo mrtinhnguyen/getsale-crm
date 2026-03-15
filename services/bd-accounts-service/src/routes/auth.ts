@@ -5,8 +5,9 @@ import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
-import { TelegramManager } from '../telegram-manager';
+import { TelegramManager } from '../telegram';
 import { getTelegramApiCredentials, getAccountOr404, requireAccountOwner, requireBidiOwnAccount } from '../helpers';
+import { encryptSession, decryptIfNeeded } from '../crypto';
 
 interface Deps {
   pool: Pool;
@@ -110,9 +111,9 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
       );
     } else {
       const insertResult = await pool.query(
-        `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, is_active, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [organizationId, phoneNumber, phoneNumber, String(apiId), apiHash, false, userId]
+        `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, is_active, session_encrypted, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING id`,
+        [organizationId, phoneNumber, phoneNumber, String(apiId), encryptSession(apiHash), false, userId]
       );
       accountId = insertResult.rows[0].id;
     }
@@ -222,15 +223,18 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
     if (existingResult.rows.length > 0) {
       accountId = existingResult.rows[0].id;
       const existingAccount = await pool.query(
-        'SELECT session_string FROM bd_accounts WHERE id = $1',
+        'SELECT session_string, session_encrypted FROM bd_accounts WHERE id = $1',
         [accountId]
       );
-      existingSessionString = existingAccount.rows[0]?.session_string;
+      const existingRow = existingAccount.rows[0];
+      existingSessionString = existingRow
+        ? decryptIfNeeded(existingRow.session_string, existingRow.session_encrypted) ?? undefined
+        : undefined;
     } else {
       const insertResult = await pool.query(
-        `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [organizationId, phoneNumber, phoneNumber, String(apiId), apiHash, true]
+        `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, is_active, session_encrypted)
+         VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING id`,
+        [organizationId, phoneNumber, phoneNumber, String(apiId), encryptSession(apiHash), true]
       );
       accountId = insertResult.rows[0].id;
     }

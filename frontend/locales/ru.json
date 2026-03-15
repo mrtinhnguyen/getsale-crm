@@ -131,6 +131,8 @@
     "activityDealCreated": "создал(а) сделку",
     "activityLeadConverted": "сконвертировал(а) лида",
     "activityDiscoveryStarted": "запустил(а) парсинг / discovery",
+    "upcomingReminders": "Предстоящие напоминания",
+    "allReminders": "Все напоминания в CRM",
     "quickActions": "Быстрые действия",
     "createCompany": "Создать компанию",
     "addContact": "Добавить контакт",
@@ -192,6 +194,7 @@
     "importEmail": "Email",
     "importPhone": "Телефон",
     "importTelegramId": "Telegram ID",
+    "importColumn": "Кол. {{num}}",
     "importMapping": "Соответствие колонок",
     "importCreated": "Создано",
     "importUpdated": "Обновлено",
@@ -1077,7 +1080,19 @@
     "download": "Скачать",
     "mediaAudio": "Аудио",
     "mediaUnknown": "Вложение",
-    "aiChatStubText": "Здесь будет диалог в стиле ChatGPT/Claude — ввод запроса и ответы ИИ. Пока без бэкенда."
+    "aiChatStubText": "Здесь будет диалог в стиле ChatGPT/Claude — ввод запроса и ответы ИИ. Пока без бэкенда.",
+    "selectChat": "Выберите чат",
+    "selectChatDesc": "Выберите чат из списка, чтобы начать переписку",
+    "cancelRecording": "Отменить",
+    "copySuccess": "Скопировано",
+    "broadcastToGroups": "Рассылка в группы",
+    "broadcastSelectGroups": "Выберите группы и введите сообщение",
+    "message": "Сообщение",
+    "typeMessage": "Введите текст...",
+    "sent": "Отправлено",
+    "failed": "Ошибки",
+    "sendToGroups": "Отправить в выбранные",
+    "noGroupsSynced": "Нет групповых чатов"
   },
   "onboarding": {
     "welcome": "Добро пожаловать в GetSale CRM",
@@ -1095,5 +1110,17 @@
     "previous": "Назад",
     "goToStep": "Перейти в {{step}}",
     "runAgain": "Запустить онбординг"
+  },
+  "errors": {
+    "globalTitle": "Что-то пошло не так",
+    "globalDescription": "Произошла непредвиденная ошибка. Попробуйте обновить страницу.",
+    "tryAgain": "Попробовать снова",
+    "goHome": "На главную",
+    "dashboardTitle": "Ошибка в разделе",
+    "dashboardDescription": "Произошла ошибка при загрузке этого раздела.",
+    "goToDashboard": "На главную панель",
+    "notFoundTitle": "Страница не найдена",
+    "notFoundDescription": "Запрашиваемая страница не существует или была перемещена.",
+    "errorCode": "Код ошибки: {{digest}}"
   }
 }

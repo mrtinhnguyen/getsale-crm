@@ -5,21 +5,11 @@ import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
 import { Building2, Users, MessageSquare, TrendingUp, ArrowRight, Bell } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
-import Button from '@/components/ui/Button';
-import { apiClient } from '@/lib/api/client';
+import { Button } from '@/components/ui/Button';
+import { reportError } from '@/lib/error-reporter';
 import { fetchUpcomingReminders, type Reminder } from '@/lib/api/crm';
-
-interface ActivityItem {
-  id: string;
-  user_id: string;
-  user_email: string;
-  user_display_name: string;
-  action_type: string;
-  entity_type: string | null;
-  entity_id: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
-}
+import { fetchDashboardStats, fetchActivityFeed, type ActivityItem } from '@/lib/api/dashboard';
+import { formatShortDateTime } from '@/lib/format/date';
 
 const ACTION_TYPE_KEYS: Record<string, string> = {
   'lead.created': 'activityLeadCreated',
@@ -74,49 +64,17 @@ export default function DashboardPage() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
 
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const [companiesRes, contactsRes, messagesRes, pipelinesRes] = await Promise.all([
-          apiClient.get('/api/crm/companies').catch(() => ({ data: [] })),
-          apiClient.get('/api/crm/contacts').catch(() => ({ data: [] })),
-          apiClient.get('/api/messaging/inbox').catch(() => ({ data: [] })),
-          apiClient.get('/api/pipeline').catch(() => ({ data: [] })),
-        ]);
-        const pipelines = Array.isArray(pipelinesRes.data) ? pipelinesRes.data : [];
-        const defaultPipeline = pipelines.find((p: { is_default?: boolean }) => p.is_default) || pipelines[0];
-        let leadsTotal = 0;
-        if (defaultPipeline?.id) {
-          const leadsRes = await apiClient.get('/api/pipeline/leads', { params: { pipelineId: defaultPipeline.id, limit: 1 } }).catch(() => ({ data: { pagination: { total: 0 } } }));
-          leadsTotal = leadsRes.data?.pagination?.total ?? 0;
-        }
-
-        setStats({
-          companies: companiesRes.data.length || 0,
-          contacts: contactsRes.data.length || 0,
-          messages: messagesRes.data.length || 0,
-          leads: leadsTotal,
-        });
-      } catch (error) {
-        console.error('Error fetching stats:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStats();
-  }, []);
-
-  useEffect(() => {
-    fetchUpcomingReminders({ hours: 72, limit: 10 })
-      .then(setUpcomingReminders)
-      .catch(() => setUpcomingReminders([]));
-  }, []);
-
-  useEffect(() => {
-    apiClient
-      .get<ActivityItem[]>('/api/activity', { params: { limit: ACTIVITY_FEED_LIMIT } })
-      .then((res) => setActivity(Array.isArray(res.data) ? res.data : []))
-      .catch(() => setActivity([]));
+    Promise.all([
+      fetchDashboardStats()
+        .then(setStats)
+        .catch((error) => reportError(error, { component: 'DashboardPage', action: 'fetchStats' })),
+      fetchUpcomingReminders({ hours: 72, limit: 10 })
+        .then(setUpcomingReminders)
+        .catch(() => setUpcomingReminders([])),
+      fetchActivityFeed(ACTIVITY_FEED_LIMIT)
+        .then(setActivity)
+        .catch(() => setActivity([])),
+    ]).finally(() => setLoading(false));
   }, []);
 
   if (loading) {
@@ -171,7 +129,7 @@ export default function DashboardPage() {
       <div className="flex-1 min-h-0 flex flex-col mt-8">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-0 flex-1">
           {upcomingReminders.length > 0 && (
-            <Card title={t('dashboard.upcomingReminders', 'Предстоящие напоминания')} className="flex flex-col min-h-0">
+            <Card title={t('dashboard.upcomingReminders')} className="flex flex-col min-h-0">
               <ul className="space-y-2 flex-1 min-h-0">
                 {upcomingReminders.slice(0, 8).map((r) => (
                   <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
@@ -179,16 +137,16 @@ export default function DashboardPage() {
                       href={r.entity_type === 'contact' ? `/dashboard/crm?tab=contacts&open=${r.entity_id}` : `/dashboard/pipeline`}
                       className="text-primary hover:underline truncate flex-1 min-w-0"
                     >
-                      {r.title || new Date(r.remind_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                      {r.title || formatShortDateTime(r.remind_at)}
                     </Link>
                     <span className="text-muted-foreground shrink-0">
-                      {new Date(r.remind_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                      {formatShortDateTime(r.remind_at)}
                     </span>
                   </li>
                 ))}
               </ul>
               <Link href="/dashboard/crm" className="text-sm text-primary hover:underline mt-2 flex items-center gap-1">
-                {t('dashboard.allReminders', 'Все напоминания в CRM')}
+                {t('dashboard.allReminders')}
                 <ArrowRight className="w-3 h-3" />
               </Link>
             </Card>
@@ -218,7 +176,7 @@ export default function DashboardPage() {
                             <span className="text-muted-foreground">{getActivityLabel(item.action_type, t)}</span>
                           </p>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            {new Date(item.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                            {formatShortDateTime(item.created_at)}
                           </p>
                         </div>
                       </li>

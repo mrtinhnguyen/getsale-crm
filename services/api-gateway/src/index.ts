@@ -1,5 +1,6 @@
 import './types'; // Augment Express Request
 import express from 'express';
+import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { createLogger } from '@getsale/logger';
 import { RedisClient } from '@getsale/utils';
@@ -14,15 +15,16 @@ import { createAuthenticate, requireRole } from './auth';
 import { createRateLimit } from './rate-limit';
 import { addCorrelationToResponse } from './proxy-helpers';
 import { createProxies } from './proxies';
-import { setupRedisSubscriber, createSseRoute, closeSseConnections } from './sse';
 
 const log = createLogger('api-gateway');
 const redis = new RedisClient(REDIS_URL);
 
-setupRedisSubscriber(log);
-
 const app = express();
 
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(corsMiddleware);
 app.use(correlationIdMiddleware);
 
@@ -42,12 +44,6 @@ const authenticate = createAuthenticate(log);
 const rateLimit = createRateLimit(redis);
 const proxies = createProxies(log);
 
-const sseRoute = createSseRoute(log);
-app.get('/api/events/stream', authenticate, (req, res) => {
-  addCorrelationToResponse(res, req);
-  sseRoute(req, res);
-});
-
 app.use('/api/auth', proxies.authProxy);
 app.use('/api/invite', (req, res, next) => {
   if (req.method === 'GET') return proxies.inviteProxy(req, res, next);
@@ -57,6 +53,7 @@ app.use('/api/invite', (req, res, next) => {
 app.use('/api/crm', authenticate, rateLimit, proxies.crmProxy);
 app.use('/api/messaging', authenticate, rateLimit, proxies.messagingProxy);
 app.use('/api/ai', authenticate, rateLimit, proxies.aiProxy);
+app.use('/api/users/stripe-webhook', proxies.stripeWebhookProxy);
 app.use('/api/users', authenticate, rateLimit, proxies.userProxy);
 app.use('/api/bd-accounts', authenticate, rateLimit, proxies.bdAccountsProxy);
 app.use('/api/pipeline', authenticate, rateLimit, proxies.pipelineProxy);
@@ -79,16 +76,8 @@ const server = app.listen(PORT, () => {
 async function shutdown(): Promise<void> {
   log.info({ message: 'API Gateway shutting down gracefully' });
   server.close(() => {
-    closeSseConnections()
-      .then(() => {
-        redis.disconnect();
-        process.exit(0);
-      })
-      .catch((err) => {
-        log.error({ message: 'Error during SSE/Redis cleanup', error: String(err) });
-        redis.disconnect();
-        process.exit(1);
-      });
+    redis.disconnect();
+    process.exit(0);
   });
 }
 

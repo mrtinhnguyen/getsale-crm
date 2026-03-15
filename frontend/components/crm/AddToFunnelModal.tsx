@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { fetchPipelines, fetchContactPipelineIds, addLeadToPipeline, type Pipeline } from '@/lib/api/pipeline';
 
 interface AddToFunnelModalProps {

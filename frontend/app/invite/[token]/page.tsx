@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { apiClient } from '@/lib/api/client';
 import { useAuthStore } from '@/lib/stores/auth-store';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Loader2, Users } from 'lucide-react';
 
 interface InviteInfo {

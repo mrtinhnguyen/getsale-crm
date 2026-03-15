@@ -8,6 +8,7 @@ import { clsx } from 'clsx';
 import { useNotificationsStore } from '@/lib/stores/notifications-store';
 import { fetchDueReminders, updateReminder } from '@/lib/api/crm';
 import { playNotificationSound } from '@/lib/notification-sound';
+import { formatShortDateTime } from '@/lib/format/date';
 
 const POLL_INTERVAL_MS = 45_000;
 
@@ -135,7 +136,7 @@ export function NotificationsDropdown() {
                       {item.title || t('crm.reminder', 'Напоминание')}
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      {new Date(item.remind_at).toLocaleString()}
+                      {formatShortDateTime(item.remind_at)}
                     </p>
                   </li>
                 ))}

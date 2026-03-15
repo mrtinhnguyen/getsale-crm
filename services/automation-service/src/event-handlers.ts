@@ -552,5 +552,10 @@ async function notifyTeam(deps: EventHandlerDeps, action: AutomationAction, even
 }
 
 async function createTask(deps: EventHandlerDeps, action: AutomationAction, event: AutomationEventPayload) {
-  deps.log.info({ message: 'Create task (TODO: integrate with task service)', action_type: action.type, event_id: event?.id });
+  deps.log.warn({
+    message: 'create_task action not yet implemented',
+    action_type: action.type,
+    event_id: event?.id,
+    organization_id: event.organizationId,
+  });
 }

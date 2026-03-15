@@ -86,6 +86,20 @@ export function createProxies(log: Logger) {
   const teamProxy = createAuthProxy(serviceUrls.team, { '^/api/team': '/api/team' });
   const campaignProxy = createAuthProxy(serviceUrls.campaign, { '^/api/campaigns': '/api/campaigns' }, { timeout: 30000, proxyTimeout: 30000 });
 
+  const stripeWebhookProxy = createProxyMiddleware({
+    target: serviceUrls.user,
+    changeOrigin: true,
+    pathRewrite: { '^/api/users/stripe-webhook': '/api/users/stripe-webhook' },
+    onProxyReq: (proxyReq, req) => {
+      addCorrelationToProxyReq(proxyReq, req as Request);
+      addInternalAuthToProxyReq(proxyReq);
+    },
+    onProxyRes: (proxyRes, req, res) => {
+      addCorrelationToResponse(res, req as Request);
+    },
+    onError,
+  });
+
   const bdAccountsProxy = createProxyMiddleware({
     target: serviceUrls.bdAccounts,
     changeOrigin: true,
@@ -115,6 +129,7 @@ export function createProxies(log: Logger) {
     messagingProxy,
     aiProxy,
     userProxy,
+    stripeWebhookProxy,
     bdAccountsProxy,
     pipelineProxy,
     automationProxy,

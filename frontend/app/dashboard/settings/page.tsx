@@ -8,7 +8,7 @@ import { canAccessWorkspaceSettings } from '@/lib/permissions';
 import { User, CreditCard, Key, Bell, Building2, FileText } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { clsx } from 'clsx';
 
 type SettingsTab = 'profile' | 'workspace' | 'subscription' | 'security' | 'notifications' | 'audit';

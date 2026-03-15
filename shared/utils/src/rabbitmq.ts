@@ -1,5 +1,13 @@
 import amqp from 'amqplib';
+import { Counter } from 'prom-client';
 import { Event, EventType } from '@getsale/events';
+import { createLogger, type Logger } from '@getsale/logger';
+
+const dlqCounter = new Counter({
+  name: 'rabbitmq_dlq_messages_total',
+  help: 'Total messages sent to dead letter queues',
+  labelNames: ['queue'] as const,
+});
 
 type Connection = Awaited<ReturnType<typeof amqp.connect>>;
 type Channel = Awaited<ReturnType<Connection['createChannel']>>;
@@ -11,9 +19,11 @@ export class RabbitMQClient {
   /** Dedicated channel for consuming only (ack, prefetch). */
   private consumeChannel: Channel | null = null;
   private url: string;
+  private log: Logger;
 
-  constructor(url: string) {
+  constructor(url: string, log?: Logger) {
     this.url = url;
+    this.log = log ?? createLogger('rabbitmq');
   }
 
   isConnected(): boolean {
@@ -32,23 +42,23 @@ export class RabbitMQClient {
         this.consumeChannel = await conn.createChannel();
 
         this.connection.on('error', (err) => {
-          console.error('RabbitMQ connection error:', err);
+          this.log.error({ message: 'RabbitMQ connection error', error: String(err) });
         });
 
         this.connection.on('close', () => {
-          console.log('RabbitMQ connection closed');
+          this.log.info({ message: 'RabbitMQ connection closed' });
         });
 
-        console.log('Successfully connected to RabbitMQ');
+        this.log.info({ message: 'Successfully connected to RabbitMQ' });
         return;
       } catch (error: unknown) {
         const err = error as Error;
         if (attempt === retries) {
-          console.error(`Failed to connect to RabbitMQ after ${retries} attempts:`, err);
+          this.log.error({ message: `Failed to connect to RabbitMQ after ${retries} attempts`, error: err.message });
           throw error;
         }
         const delay = initialDelay * Math.pow(2, attempt - 1);
-        console.log(`RabbitMQ connection attempt ${attempt}/${retries} failed, retrying in ${delay}ms...`);
+        this.log.info({ message: `RabbitMQ connection attempt ${attempt}/${retries} failed, retrying in ${delay}ms` });
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
@@ -56,7 +66,7 @@ export class RabbitMQClient {
 
   async publishEvent(event: Event, exchange: string = 'events'): Promise<void> {
     if (!this.publishChannel) {
-      console.warn('RabbitMQ publish channel not initialized, event not published:', event.type);
+      this.log.warn({ message: 'RabbitMQ publish channel not initialized, event not published', event_type: event.type });
       return;
     }
 
@@ -78,7 +88,7 @@ export class RabbitMQClient {
   /** Publish event to a DLQ (durable queue). Uses default exchange; queue must exist. */
   async publishToDlq(queueName: string, event: Event): Promise<void> {
     if (!this.publishChannel) {
-      console.warn('RabbitMQ publish channel not initialized, DLQ publish skipped:', queueName);
+      this.log.warn({ message: 'RabbitMQ publish channel not initialized, DLQ publish skipped', queue: queueName });
       return;
     }
     await this.publishChannel.assertQueue(queueName, { durable: true });
@@ -134,7 +144,7 @@ export class RabbitMQClient {
         await handler(event);
         cons.ack(msg);
       } catch (error) {
-        console.error('Error processing event:', error);
+        this.log.error({ message: 'Error processing event', error: error instanceof Error ? error.message : String(error) });
         if (retryCount < RabbitMQClient.MAX_RETRIES) {
           pub.sendToQueue(queue, msg.content, {
             ...msg.properties,
@@ -149,8 +159,19 @@ export class RabbitMQClient {
             const event = JSON.parse(msg.content.toString());
             event.timestamp = event.timestamp ? new Date(event.timestamp) : new Date();
             await this.publishToDlq(dlqName, event);
-          } catch (_) {
-            // best effort DLQ
+            dlqCounter.inc({ queue: dlqName });
+            this.log.error({
+              message: 'Message sent to DLQ after max retries',
+              queue: dlqName,
+              event_type: event.type,
+              retries: RabbitMQClient.MAX_RETRIES,
+            });
+          } catch (dlqError) {
+            this.log.error({
+              message: 'Failed to publish message to DLQ',
+              queue: dlqName,
+              error: dlqError instanceof Error ? dlqError.message : String(dlqError),
+            });
           }
           cons.ack(msg);
         }

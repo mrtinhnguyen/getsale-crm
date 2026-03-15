@@ -80,7 +80,12 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
       })
     );
   }
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({
+    limit: '5mb',
+    verify: (req, _res, buf) => {
+      (req as any).rawBody = buf;
+    },
+  }));
   app.use(correlationId());
   if (!config.skipUserExtract) {
     app.use(extractUser());
@@ -140,7 +145,11 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
   // DB pool
   let pool: Pool;
   if (config.skipDb) {
-    pool = null as unknown as Pool;
+    pool = new Proxy({} as Pool, {
+      get(_, prop) {
+        throw new Error(`Database pool accessed but skipDb was true. Cannot call pool.${String(prop)}`);
+      },
+    });
   } else {
     pool = new Pool({
       connectionString:

@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useWebSocketContext } from '@/lib/contexts/websocket-context';
-import { useEventsStream } from '@/lib/contexts/events-stream-context';
 import type { BDAccount } from '../types';
 import type { MessagingState } from './useMessagingState';
 
@@ -10,41 +9,42 @@ export function useMessagingWebSocket(
   fetchAccounts: () => Promise<void>,
 ) {
   const { on, off, subscribe, unsubscribe, isConnected } = useWebSocketContext();
-  const { subscribe: subscribeEvents } = useEventsStream();
 
-  // ─── Sync progress via SSE (unified events stream) ─────────────────
-  useEffect(() => {
-    const unsub = subscribeEvents('sync_progress', (data: Record<string, unknown>) => {
-      const bdAccountId = data.bdAccountId as string | undefined;
-      if (!bdAccountId || bdAccountId !== s.selectedAccountId) return;
-      const done = Number(data.done ?? 0);
-      const total = Number(data.total ?? 0);
-      s.setAccountSyncReady(false);
-      s.setAccountSyncProgress({ done, total: total || 1 });
-      if (data.completed === true || (total > 0 && done >= total)) {
-        s.setAccountSyncReady(true);
-        s.setAccountSyncProgress(null);
-        s.setAccountSyncError(null);
-        fetchChats();
-        fetchAccounts();
-      }
-    });
-    return unsub;
-  }, [s.selectedAccountId, subscribeEvents, fetchChats, fetchAccounts]);
-
-  // ─── Sync events for selected account (WebSocket fallback) ────────────────────────────
+  // ─── Sync events for selected account ────────────────────────────
   useEffect(() => {
     if (!s.selectedAccountId || !isConnected) return;
     subscribe(`bd-account:${s.selectedAccountId}`);
     const handler = (payload: { type?: string; data?: Record<string, unknown> }) => {
-      if (!payload?.type || payload.data?.bdAccountId !== s.selectedAccountId) return;
+      if (!payload?.type) return;
+      const data = payload.data;
+
+      // sync_progress events arrive via Redis bridge (user room)
+      if (payload.type === 'sync_progress') {
+        const bdAccountId = data?.bdAccountId as string | undefined;
+        if (!bdAccountId || bdAccountId !== s.selectedAccountId) return;
+        const done = Number(data?.done ?? 0);
+        const total = Number(data?.total ?? 0);
+        s.setAccountSyncReady(false);
+        s.setAccountSyncProgress({ done, total: total || 1 });
+        if (data?.completed === true || (total > 0 && done >= total)) {
+          s.setAccountSyncReady(true);
+          s.setAccountSyncProgress(null);
+          s.setAccountSyncError(null);
+          fetchChats();
+          fetchAccounts();
+        }
+        return;
+      }
+
+      // bd_account.sync.* events arrive via RabbitMQ (bd-account room)
+      if (data?.bdAccountId !== s.selectedAccountId) return;
       if (payload.type === 'bd_account.sync.started') {
         s.setAccountSyncReady(false);
-        s.setAccountSyncProgress({ done: 0, total: (payload.data?.totalChats as number) ?? 0 });
+        s.setAccountSyncProgress({ done: 0, total: (data?.totalChats as number) ?? 0 });
       }
       if (payload.type === 'bd_account.sync.progress') {
         s.setAccountSyncReady(false);
-        s.setAccountSyncProgress({ done: (payload.data?.done as number) ?? 0, total: (payload.data?.total as number) ?? 0 });
+        s.setAccountSyncProgress({ done: (data?.done as number) ?? 0, total: (data?.total as number) ?? 0 });
       }
       if (payload.type === 'bd_account.sync.completed') {
         s.setAccountSyncReady(true); s.setAccountSyncProgress(null); s.setAccountSyncError(null);
@@ -52,12 +52,12 @@ export function useMessagingWebSocket(
       }
       if (payload.type === 'bd_account.sync.failed') {
         s.setAccountSyncReady(false); s.setAccountSyncProgress(null);
-        s.setAccountSyncError((payload.data?.error as string) ?? 'Синхронизация не удалась');
+        s.setAccountSyncError((data?.error as string) ?? 'Синхронизация не удалась');
       }
     };
     on('event', handler);
     return () => { off('event', handler); unsubscribe(`bd-account:${s.selectedAccountId}`); };
-  }, [s.selectedAccountId, isConnected, subscribe, unsubscribe, on, off]);
+  }, [s.selectedAccountId, isConnected, subscribe, unsubscribe, on, off, fetchChats, fetchAccounts]);
 
   // ─── New messages across all accounts ────────────────────────────
   useEffect(() => {

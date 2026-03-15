@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import type { PinnedChatRow, QueryParam } from '../types';
 
 interface Deps {
   pool: Pool;
@@ -18,7 +19,7 @@ export function chatsRouter({ pool, log }: Deps): Router {
     const { channel, bdAccountId } = req.query;
 
     const orgId = organizationId;
-    const params: any[] = [orgId];
+    const params: QueryParam[] = [orgId];
 
     if (bdAccountId && String(bdAccountId).trim()) {
       if (channel && String(channel) !== 'telegram') {
@@ -104,7 +105,7 @@ export function chatsRouter({ pool, log }: Deps): Router {
       return res.json(rows);
     }
 
-    if (channel) params.push(channel);
+    if (channel) params.push(String(channel));
     const channelParam = channel ? ` AND m.channel = $${params.length}` : '';
     let query = `
       WITH latest_per_chat AS (
@@ -254,15 +255,15 @@ export function chatsRouter({ pool, log }: Deps): Router {
       FROM messages
       WHERE organization_id = $1
     `;
-    const params: any[] = [organizationId];
+    const params: QueryParam[] = [organizationId];
 
     if (startDate) {
       query += ` AND created_at >= $${params.length + 1}`;
-      params.push(startDate);
+      params.push(String(startDate));
     }
     if (endDate) {
       query += ` AND created_at <= $${params.length + 1}`;
-      params.push(endDate);
+      params.push(String(endDate));
     }
 
     query += ` GROUP BY channel, direction, status`;
@@ -293,7 +294,10 @@ export function chatsRouter({ pool, log }: Deps): Router {
        ORDER BY order_index ASC, created_at ASC`,
       [userId, organizationId, String(bdAccountId).trim()]
     );
-    res.json(result.rows.map((r: any) => ({ channel_id: r.channel_id, order_index: r.order_index })));
+    res.json(result.rows.map((r: unknown) => {
+      const row = r as PinnedChatRow;
+      return { channel_id: row.channel_id, order_index: row.order_index };
+    }));
   }));
 
   // POST /pinned-chats
@@ -348,7 +352,7 @@ export function chatsRouter({ pool, log }: Deps): Router {
       throw new AppError(400, 'bdAccountId is required', ErrorCodes.VALIDATION);
     }
     const bdId = String(bdAccountId).trim();
-    const ids = Array.isArray(pinnedChatIds) ? pinnedChatIds.map((x: any) => String(x)).filter(Boolean) : [];
+    const ids = Array.isArray(pinnedChatIds) ? pinnedChatIds.map((x: unknown) => String(x)).filter(Boolean) : [];
     await pool.query(
       `DELETE FROM user_chat_pins
        WHERE user_id = $1 AND organization_id = $2 AND bd_account_id = $3`,

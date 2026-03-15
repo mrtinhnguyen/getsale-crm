@@ -10,7 +10,9 @@
   "dependencies": {
     "amqplib": "^0.10.3",
     "ioredis": "^5.3.2",
-    "@getsale/events": "*"
+    "prom-client": "^15.1.0",
+    "@getsale/events": "*",
+    "@getsale/logger": "*"
   },
   "devDependencies": {
     "@types/amqplib": "^0.10.4",

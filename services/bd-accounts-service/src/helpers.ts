@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { AppError, ErrorCodes } from '@getsale/service-core';
-import { TelegramManager } from './telegram-manager';
+import { TelegramManager } from './telegram';
 
 /** Row from bd_account_sync_folders (folder_id). */
 export interface FolderRow {
@@ -142,7 +142,7 @@ export async function fetchFoldersFromTelegramAndSave(
   const filters = await telegramManager.getDialogFilters(accountId);
   const toSave: { folder_id: number; folder_title: string; icon: string | null }[] = [
     { folder_id: 0, folder_title: 'Все чаты', icon: '💬' },
-    ...filters.map((f) => ({ folder_id: f.id, folder_title: f.title, icon: f.emoticon ?? null })),
+    ...filters.map((f: { id: number; title: string; emoticon?: string | null }) => ({ folder_id: f.id, folder_title: f.title, icon: f.emoticon ?? null })),
   ];
   const seen = new Set<number>();
   const unique = toSave.filter((f) => {

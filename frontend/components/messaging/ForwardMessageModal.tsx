@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { ChatAvatar } from '@/components/messaging/ChatAvatar';
 import type { Chat } from '@/app/dashboard/messaging/types';
 

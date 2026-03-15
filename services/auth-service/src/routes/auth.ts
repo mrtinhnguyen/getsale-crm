@@ -7,8 +7,10 @@ import { UserRole } from '@getsale/types';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, ServiceHttpClient } from '@getsale/service-core';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import {
   signAccessToken, signRefreshToken, signWsToken, verifyAccessToken, verifyRefreshToken, hashRefreshToken,
+  signTempToken,
 } from '../helpers';
 import {
   AUTH_COOKIE_ACCESS,
@@ -37,6 +39,9 @@ const SIGNIN_RATE_LIMIT = 10;
 const SIGNIN_RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
 const SIGNIN_RATE_WINDOW_SEC = Math.ceil(SIGNIN_RATE_WINDOW_MS / 1000);
 
+const SIGNIN_EMAIL_RATE_LIMIT = 5;
+const SIGNIN_EMAIL_RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
+
 const SIGNUP_RATE_LIMIT = 5;
 const SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const SIGNUP_RATE_WINDOW_SEC = Math.ceil(SIGNUP_RATE_WINDOW_MS / 1000);
@@ -50,7 +55,7 @@ function getClientIp(req: { ip?: string; headers?: Record<string, string | strin
   return req.ip || 'unknown';
 }
 
-async function checkRateLimit(
+export async function checkRateLimit(
   redis: RedisClient,
   opts: { keyPrefix: string; clientId: string; limit: number; windowMs: number; message: string }
 ): Promise<void> {
@@ -63,24 +68,39 @@ async function checkRateLimit(
   }
 }
 
+function validatePassword(password: string): string | null {
+  if (password.length < 8) return 'Password must be at least 8 characters';
+  if (password.length > 128) return 'Password must be at most 128 characters';
+  if (!/[a-z]/.test(password)) return 'Password must contain a lowercase letter';
+  if (!/[A-Z]/.test(password)) return 'Password must contain an uppercase letter';
+  if (!/[0-9]/.test(password)) return 'Password must contain a digit';
+  return null;
+}
+
+const emailSchema = z.string().email('Invalid email format').max(254).trim().toLowerCase();
+
 function validateEmailAndPassword(
   body: unknown,
   opts: { requirePasswordLength?: boolean } = {}
 ): { email: string; password: string } {
-  const email = (body as { email?: unknown }).email;
-  const password = (body as { password?: unknown }).password;
-  if (!email || !password) throw new AppError(400, 'Email and password required', ErrorCodes.BAD_REQUEST);
-  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+  const raw = body as { email?: unknown; password?: unknown };
+  if (!raw.email || !raw.password) throw new AppError(400, 'Email and password required', ErrorCodes.BAD_REQUEST);
+
+  const emailResult = emailSchema.safeParse(raw.email);
+  if (!emailResult.success) {
     throw new AppError(400, 'Invalid email format', ErrorCodes.VALIDATION);
   }
-  if (typeof password !== 'string') throw new AppError(400, 'Invalid password', ErrorCodes.VALIDATION);
-  if (opts.requirePasswordLength !== false && password.length < 8) {
-    throw new AppError(400, 'Password must be at least 8 characters', ErrorCodes.VALIDATION);
+  const email = emailResult.data;
+
+  if (typeof raw.password !== 'string') throw new AppError(400, 'Invalid password', ErrorCodes.VALIDATION);
+  if (opts.requirePasswordLength !== false) {
+    const pwError = validatePassword(raw.password);
+    if (pwError) throw new AppError(400, pwError, ErrorCodes.VALIDATION);
   }
-  return { email: email.trim(), password };
+  return { email, password: raw.password };
 }
 
-function setAuthCookiesAndRespond(
+export function setAuthCookiesAndRespond(
   res: import('express').Response,
   accessToken: string,
   refreshToken: string,
@@ -128,13 +148,14 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
         if (orgRow.rows.length === 0) throw new AppError(404, 'Organization not found', ErrorCodes.NOT_FOUND);
         organization = orgRow.rows[0];
 
-        const passwordHash = await bcrypt.hash(password, 10);
+        const passwordHash = await bcrypt.hash(password, 12);
         const userResult = await client.query(
           'INSERT INTO users (email, password_hash, organization_id, role) VALUES ($1, $2, $3, $4) RETURNING *',
           [email, passwordHash, organization.id, inviteRole]
         );
         user = userResult.rows[0];
         await client.query('INSERT INTO organization_members (user_id, organization_id, role) VALUES ($1, $2, $3)', [user.id, organization.id, inviteRole]);
+        await client.query('DELETE FROM organization_invite_links WHERE token = $1', [inviteToken]);
       } else {
         // New org path: create organization, user (owner), default team + members, and organization_members. Default pipeline is created later via pipeline-service.
         createdNewOrg = true;
@@ -152,7 +173,7 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
         );
         organization = orgResult.rows[0];
 
-        const passwordHash = await bcrypt.hash(password, 10);
+        const passwordHash = await bcrypt.hash(password, 12);
         const userResult = await client.query(
           'INSERT INTO users (email, password_hash, organization_id, role) VALUES ($1, $2, $3, $4) RETURNING *',
           [email, passwordHash, organization.id, UserRole.OWNER]
@@ -204,8 +225,11 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     const accessToken = signAccessToken({ userId: user.id, organizationId: organization.id, role: user.role });
     const refreshToken = signRefreshToken(user.id);
     const tokenHash = hashRefreshToken(refreshToken);
-    await pool.query('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
-      [user.id, tokenHash, new Date(Date.now() + REFRESH_EXPIRY_MS)]);
+    const familyId = randomUUID();
+    await pool.query(
+      'INSERT INTO refresh_tokens (user_id, token, family_id, expires_at) VALUES ($1, $2, $3, $4)',
+      [user.id, tokenHash, familyId, new Date(Date.now() + REFRESH_EXPIRY_MS)],
+    );
 
     setAuthCookiesAndRespond(res, accessToken, refreshToken, {
       id: user.id, email: user.email, organizationId: organization.id, role: user.role,
@@ -222,6 +246,14 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     });
     const { email, password } = validateEmailAndPassword(req.body, { requirePasswordLength: false });
 
+    await checkRateLimit(redis, {
+      keyPrefix: 'auth_rate:signin:email',
+      clientId: email.toLowerCase(),
+      limit: SIGNIN_EMAIL_RATE_LIMIT,
+      windowMs: SIGNIN_EMAIL_RATE_WINDOW_MS,
+      message: 'Too many sign-in attempts for this account. Try again later.',
+    });
+
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) throw new AppError(401, 'Invalid credentials', ErrorCodes.UNAUTHORIZED);
 
@@ -229,18 +261,29 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) throw new AppError(401, 'Invalid credentials', ErrorCodes.UNAUTHORIZED);
 
+    if (user.mfa_enabled) {
+      const tempToken = signTempToken(user.id);
+      res.json({ requiresTwoFactor: true, tempToken });
+      return;
+    }
+
     const accessToken = signAccessToken({ userId: user.id, organizationId: user.organization_id, role: user.role });
     const refreshToken = signRefreshToken(user.id);
     const tokenHash = hashRefreshToken(refreshToken);
+    const familyId = randomUUID();
 
     try {
-      await pool.query('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
-        [user.id, tokenHash, new Date(Date.now() + REFRESH_EXPIRY_MS)]);
+      await pool.query(
+        'INSERT INTO refresh_tokens (user_id, token, family_id, expires_at) VALUES ($1, $2, $3, $4)',
+        [user.id, tokenHash, familyId, new Date(Date.now() + REFRESH_EXPIRY_MS)],
+      );
     } catch (e: unknown) {
       const err = e as { code?: string };
       if (err.code === '23505') {
-        await pool.query('UPDATE refresh_tokens SET expires_at = $1 WHERE token = $2',
-          [new Date(Date.now() + REFRESH_EXPIRY_MS), tokenHash]);
+        await pool.query(
+          'UPDATE refresh_tokens SET expires_at = $1, family_id = $2, used = false WHERE token = $3',
+          [new Date(Date.now() + REFRESH_EXPIRY_MS), familyId, tokenHash],
+        );
       } else throw e;
     }
 
@@ -275,7 +318,13 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     const refreshToken = req.cookies?.[AUTH_COOKIE_REFRESH];
     if (refreshToken) {
       const tokenHash = hashRefreshToken(refreshToken);
-      await pool.query('DELETE FROM refresh_tokens WHERE token = $1 OR token = $2', [tokenHash, refreshToken]);
+      const tokenRow = await pool.query(
+        'SELECT family_id FROM refresh_tokens WHERE token = $1 OR token = $2',
+        [tokenHash, refreshToken],
+      );
+      if (tokenRow.rows.length > 0) {
+        await pool.query('DELETE FROM refresh_tokens WHERE family_id = $1', [tokenRow.rows[0].family_id]);
+      }
     }
     res.cookie(AUTH_COOKIE_ACCESS, '', { ...AUTH_COOKIE_OPTS, maxAge: 0 });
     res.cookie(AUTH_COOKIE_REFRESH, '', { ...AUTH_COOKIE_OPTS, maxAge: 0 });
@@ -339,7 +388,10 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
         throw new AppError(401, 'Invalid or expired refresh token', ErrorCodes.UNAUTHORIZED);
       }
       const tokenHash = hashRefreshToken(refreshToken);
-      const tokenCheck = await pool.query('SELECT * FROM refresh_tokens WHERE token = $1 OR token = $2', [tokenHash, refreshToken]);
+      const tokenCheck = await pool.query(
+        'SELECT * FROM refresh_tokens WHERE (token = $1 OR token = $2) AND used = false',
+        [tokenHash, refreshToken],
+      );
       if (tokenCheck.rows.length === 0) throw new AppError(401, 'Invalid refresh token', ErrorCodes.UNAUTHORIZED);
       const userResult = await pool.query('SELECT id, organization_id, role FROM users WHERE id = $1', [decoded.userId]);
       if (userResult.rows.length === 0) throw new AppError(401, 'User not found', ErrorCodes.UNAUTHORIZED);
@@ -374,23 +426,63 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     }
 
     const tokenHash = hashRefreshToken(refreshToken);
-    let tokenCheck = await pool.query('SELECT * FROM refresh_tokens WHERE token = $1', [tokenHash]);
-    if (tokenCheck.rows.length === 0) {
-      tokenCheck = await pool.query('SELECT * FROM refresh_tokens WHERE token = $1', [refreshToken]);
-      if (tokenCheck.rows.length > 0) {
-        await pool.query('UPDATE refresh_tokens SET token = $1 WHERE id = $2', [tokenHash, tokenCheck.rows[0].id]);
-      }
+    let tokenRow = await pool.query(
+      'SELECT id, user_id, family_id, used, expires_at FROM refresh_tokens WHERE token = $1',
+      [tokenHash],
+    );
+    // Backward-compat: check unhashed token for rows created before hashing was introduced
+    if (tokenRow.rows.length === 0) {
+      tokenRow = await pool.query(
+        'SELECT id, user_id, family_id, used, expires_at FROM refresh_tokens WHERE token = $1',
+        [refreshToken],
+      );
     }
-    if (tokenCheck.rows.length === 0) throw new AppError(401, 'Invalid refresh token', ErrorCodes.UNAUTHORIZED);
-    if (new Date(tokenCheck.rows[0].expires_at) <= new Date()) throw new AppError(401, 'Refresh token expired', ErrorCodes.UNAUTHORIZED);
+    if (tokenRow.rows.length === 0) throw new AppError(401, 'Invalid refresh token', ErrorCodes.UNAUTHORIZED);
+
+    const storedToken = tokenRow.rows[0];
+
+    // Reuse detection: a used token being presented again indicates possible token theft
+    if (storedToken.used) {
+      log.warn({
+        message: 'Refresh token reuse detected — possible token theft',
+        entity_type: 'user',
+        entity_id: decoded.userId,
+        family_id: storedToken.family_id,
+      });
+      await pool.query('DELETE FROM refresh_tokens WHERE family_id = $1', [storedToken.family_id]);
+      throw new AppError(401, 'Invalid refresh token', ErrorCodes.UNAUTHORIZED);
+    }
+
+    if (new Date(storedToken.expires_at) <= new Date()) {
+      throw new AppError(401, 'Refresh token expired', ErrorCodes.UNAUTHORIZED);
+    }
 
     const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [decoded.userId]);
     if (userResult.rows.length === 0) throw new AppError(401, 'User not found', ErrorCodes.UNAUTHORIZED);
 
     const user = userResult.rows[0];
+    const newRefreshToken = signRefreshToken(user.id);
+    const newTokenHash = hashRefreshToken(newRefreshToken);
     const accessToken = signAccessToken({ userId: user.id, organizationId: user.organization_id, role: user.role });
 
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE refresh_tokens SET used = true WHERE id = $1', [storedToken.id]);
+      await client.query(
+        'INSERT INTO refresh_tokens (user_id, token, family_id, expires_at) VALUES ($1, $2, $3, $4)',
+        [user.id, newTokenHash, storedToken.family_id, new Date(Date.now() + REFRESH_EXPIRY_MS)],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
     res.cookie(AUTH_COOKIE_ACCESS, accessToken, { ...AUTH_COOKIE_OPTS, maxAge: ACCESS_MAX_AGE_SEC * 1000 });
+    res.cookie(AUTH_COOKIE_REFRESH, newRefreshToken, { ...AUTH_COOKIE_OPTS, maxAge: REFRESH_MAX_AGE_SEC * 1000 });
     res.json({
       user: { id: user.id, email: user.email, organizationId: user.organization_id, role: user.role },
     });

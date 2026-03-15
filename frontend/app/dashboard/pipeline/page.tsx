@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
 import { Plus, Circle, LayoutGrid, List, CalendarClock, GripVertical, MoreVertical, Settings, Pencil, Trash2, User } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Pagination } from '@/components/ui/Pagination';
 import { fetchPipelines, fetchStages, fetchLeads, updateLead, removeLead, type Pipeline, type Stage, type Lead } from '@/lib/api/pipeline';
@@ -13,6 +13,7 @@ import { LeadCardModal } from '@/components/pipeline/LeadCardModal';
 import { LeadCardPreview } from '@/components/pipeline/LeadCardPreview';
 import { LeadAvatar } from '@/components/pipeline/LeadAvatar';
 import { apiClient } from '@/lib/api/client';
+import { safeSetItem } from '@/lib/safe-storage';
 import { formatDealAmount } from '@/lib/format/currency';
 
 function leadContactName(lead: Lead): string {
@@ -115,8 +116,8 @@ export default function PipelinePage() {
   }, []);
 
   useEffect(() => {
-    if (selectedPipelineId && typeof window !== 'undefined') {
-      window.localStorage.setItem('pipeline.selectedPipelineId', selectedPipelineId);
+    if (selectedPipelineId) {
+      safeSetItem('pipeline.selectedPipelineId', selectedPipelineId);
     }
   }, [selectedPipelineId]);
 

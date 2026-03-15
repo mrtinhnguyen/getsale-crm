@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { MessageSquare, ExternalLink, Loader2, Save, Trash2 } from 'lucide-react';
 import { LeadContextAvatar } from '@/components/messaging/LeadContextAvatar';
 import { Modal } from '@/components/ui/Modal';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { fetchLeadContextByLeadId, resolveContact, type LeadContextByLead } from '@/lib/api/messaging';
 import { updateLead } from '@/lib/api/pipeline';
 import { apiClient } from '@/lib/api/client';

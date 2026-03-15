@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { UserPlus, Users, Link2, Copy, Loader2, Trash2 } from 'lucide-react';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { canManageTeam } from '@/lib/permissions';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';

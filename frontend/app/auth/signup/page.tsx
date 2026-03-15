@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import Link from 'next/link';
 import { Input } from '@/components/ui/Input';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 
 function SignupForm() {
   const { t } = useTranslation();

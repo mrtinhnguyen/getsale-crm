@@ -1,6 +1,6 @@
 import { createServiceApp } from '@getsale/service-core';
 import { RedisClient } from '@getsale/utils';
-import { TelegramManager } from './telegram-manager';
+import { TelegramManager } from './telegram';
 import { accountsRouter } from './routes/accounts';
 import { authRouter } from './routes/auth';
 import { syncRouter } from './routes/sync';
@@ -58,18 +58,18 @@ async function main() {
     process.exit(0);
   });
 
-  telegramManager.initializeActiveAccounts().catch((error) => {
+  telegramManager.initializeActiveAccounts().catch((error: unknown) => {
     log.error({ message: 'Failed to initialize active accounts', error: String(error) });
   });
 
   const deps = { pool, rabbitmq, log, telegramManager };
 
-  // Auth routes have literal paths (e.g. /qr-login-status) — mount before accounts which has /:id
+  // Auth (literal paths) and media (/:id/avatar, /:id/chats/:chatId/avatar) before accounts (/:id)
   ctx.mount('/api/bd-accounts', authRouter(deps));
+  ctx.mount('/api/bd-accounts', mediaRouter(deps));
   ctx.mount('/api/bd-accounts', accountsRouter(deps));
   ctx.mount('/api/bd-accounts', syncRouter(deps));
   ctx.mount('/api/bd-accounts', messagingRouter(deps));
-  ctx.mount('/api/bd-accounts', mediaRouter(deps));
 
   ctx.start();
 }

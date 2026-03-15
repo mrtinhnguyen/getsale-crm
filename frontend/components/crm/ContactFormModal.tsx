@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Contact, Company, createContact, updateContact, fetchCompanies } from '@/lib/api/crm';
 
 interface ContactFormModalProps {

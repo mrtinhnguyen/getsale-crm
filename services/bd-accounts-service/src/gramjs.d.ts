@@ -20,7 +20,7 @@ declare module 'telegram' {
     const PeerUser: unknown;
     const PeerChat: unknown;
     const PeerChannel: unknown;
-    const Message: unknown;
+    class Message { id: unknown; date?: unknown; [key: string]: unknown; }
     const User: unknown;
     const auth: unknown;
     const TypeMessageEntity: unknown;

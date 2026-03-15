@@ -31,3 +31,39 @@ export function canManageTeam(role: string | undefined | null): boolean {
 export function canTransferOwnership(role: string | undefined | null): boolean {
   return normalizeRole(role) === 'owner';
 }
+
+/** CRM (contacts, companies, deals): owner, admin, supervisor */
+export function canManageCRM(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin' || r === 'supervisor';
+}
+
+/** Campaigns: owner, admin, supervisor */
+export function canManageCampaigns(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin' || r === 'supervisor';
+}
+
+/** Messaging: owner, admin, supervisor, bidi */
+export function canManageMessaging(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin' || r === 'supervisor' || r === 'bidi';
+}
+
+/** Analytics: owner, admin, supervisor */
+export function canViewAnalytics(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin' || r === 'supervisor';
+}
+
+/** BD accounts: owner, admin */
+export function canManageBDAccounts(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin';
+}
+
+/** Automation rules: owner, admin */
+export function canManageAutomation(role: string | undefined | null): boolean {
+  const r = normalizeRole(role);
+  return r === 'owner' || r === 'admin';
+}

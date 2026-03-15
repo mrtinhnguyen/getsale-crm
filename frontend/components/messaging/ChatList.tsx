@@ -7,7 +7,7 @@ import {
   MessageSquare, Loader2, ChevronRight, ChevronLeft,
   RefreshCw, Pencil, Users, Inbox,
 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ChatAvatar } from '@/components/messaging/ChatAvatar';
 import type { BDAccount, Chat, SyncFolder } from '@/app/dashboard/messaging/types';

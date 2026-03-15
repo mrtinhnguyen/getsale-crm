@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslation } from 'react-i18next';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import type { ResolvedSource } from '@/lib/api/discovery';
 import type { ParseSettings } from '@/lib/api/discovery';
 

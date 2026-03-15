@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { clsx } from 'clsx';
 import { Plus, MessageSquare, Clock, Pencil, Trash2, GripVertical, Eye } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import {
   createCampaignTemplate,
   createCampaignSequenceStep,

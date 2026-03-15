@@ -3,7 +3,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@/components/ui/Modal';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { createContactNote } from '@/lib/api/crm';
 import { Loader2 } from 'lucide-react';
 

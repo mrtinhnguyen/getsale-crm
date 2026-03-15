@@ -8,7 +8,7 @@ import {
   MessageSquare,
   Send,
 } from 'lucide-react';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { apiClient } from '@/lib/api/client';
 
 const STORAGE_KEY_PREFIX = 'getsale_ai_chat_';

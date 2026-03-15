@@ -152,7 +152,7 @@ export function membersRouter({ pool, rabbitmq, log }: Deps): Router {
     }
 
     const tempPassword = randomUUID();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const passwordHash = await bcrypt.hash(tempPassword, 12);
     const normalizedRole = normalizeRole(role);
 
     try {

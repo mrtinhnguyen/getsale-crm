@@ -47,8 +47,12 @@ export function subscriptionRouter({ pool, log, stripe }: Deps): Router {
     if (subResult.rows.length > 0 && subResult.rows[0].stripe_customer_id) {
       customerId = subResult.rows[0].stripe_customer_id;
     } else {
+      const userRow = await pool.query('SELECT email FROM users WHERE id = $1', [id]);
+      if (userRow.rows.length === 0) {
+        throw new AppError(404, 'User not found', ErrorCodes.NOT_FOUND);
+      }
       const customer = await stripe.customers.create({
-        email: id,
+        email: userRow.rows[0].email,
         metadata: { userId: id, organizationId },
       });
       customerId = customer.id;

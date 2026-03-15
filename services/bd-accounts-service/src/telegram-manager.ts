@@ -5,6 +5,7 @@ import { StringSession } from 'telegram/sessions';
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 import { RabbitMQClient, RedisClient } from '@getsale/utils';
+import { encryptSession, decryptIfNeeded } from './crypto';
 import { Logger } from '@getsale/logger';
 import {
   EventType,
@@ -614,14 +615,14 @@ export class TelegramManager {
             return;
           }
           await this.pool.query(
-            `UPDATE bd_accounts SET telegram_id = $1, phone_number = $2, api_id = $3, api_hash = $4, session_string = $5, is_active = true, created_by_user_id = COALESCE(created_by_user_id, $6) WHERE id = $7`,
-            [telegramId, phoneNumber, String(apiId), apiHash, sessionString, userId, accountId]
+            `UPDATE bd_accounts SET telegram_id = $1, phone_number = $2, api_id = $3, api_hash = $4, session_string = $5, is_active = true, session_encrypted = true, created_by_user_id = COALESCE(created_by_user_id, $6) WHERE id = $7`,
+            [telegramId, phoneNumber, String(apiId), encryptSession(apiHash), encryptSession(sessionString), userId, accountId]
           );
         } else {
           const insertResult = await this.pool.query(
-            `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, session_string, is_active, created_by_user_id)
-             VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING id`,
-            [organizationId, telegramId, phoneNumber, String(apiId), apiHash, sessionString, userId]
+            `INSERT INTO bd_accounts (organization_id, telegram_id, phone_number, api_id, api_hash, session_string, is_active, session_encrypted, created_by_user_id)
+             VALUES ($1, $2, $3, $4, $5, $6, true, true, $7) RETURNING id`,
+            [organizationId, telegramId, phoneNumber, String(apiId), encryptSession(apiHash), encryptSession(sessionString), userId]
           );
           accountId = insertResult.rows[0].id;
         }
@@ -4790,7 +4791,7 @@ export class TelegramManager {
         
         // Get account details from DB
         const result = await this.pool.query(
-          'SELECT api_id, api_hash, session_string, phone_number FROM bd_accounts WHERE id = $1',
+          'SELECT api_id, api_hash, session_string, phone_number, session_encrypted FROM bd_accounts WHERE id = $1',
           [accountId]
         );
 
@@ -4799,14 +4800,16 @@ export class TelegramManager {
         }
 
         const account = result.rows[0];
+        const decryptedApiHash = decryptIfNeeded(account.api_hash, account.session_encrypted) || account.api_hash;
+        const decryptedSession = decryptIfNeeded(account.session_string, account.session_encrypted) || account.session_string;
         await this.connectAccount(
           accountId,
           account.organization_id || clientInfo.organizationId,
           clientInfo.userId,
           account.phone_number || clientInfo.phoneNumber,
           parseInt(account.api_id),
-          account.api_hash,
-          account.session_string
+          decryptedApiHash,
+          decryptedSession
         );
 
         // Reset reconnect attempts on success
@@ -4883,11 +4886,13 @@ export class TelegramManager {
       if (!info) continue;
       try {
         const row = await this.pool.query(
-          'SELECT organization_id, phone_number, api_id, api_hash, session_string FROM bd_accounts WHERE id = $1',
+          'SELECT organization_id, phone_number, api_id, api_hash, session_string, session_encrypted FROM bd_accounts WHERE id = $1',
           [accountId]
         );
         if (row.rows.length === 0 || !row.rows[0].session_string) continue;
         const acc = row.rows[0];
+        const decApiHash = decryptIfNeeded(acc.api_hash, acc.session_encrypted) || acc.api_hash;
+        const decSession = decryptIfNeeded(acc.session_string, acc.session_encrypted) || acc.session_string;
         await this.disconnectAccount(accountId);
         await this.connectAccount(
           accountId,
@@ -4895,8 +4900,8 @@ export class TelegramManager {
           info.userId,
           acc.phone_number || info.phoneNumber,
           parseInt(acc.api_id, 10),
-          acc.api_hash,
-          acc.session_string
+          decApiHash,
+          decSession
         );
       } catch (err: any) {
         this.log.error('[TelegramManager] Reconnect failed for account', accountId, err?.message || err);
@@ -4910,7 +4915,7 @@ export class TelegramManager {
   async initializeActiveAccounts(): Promise<void> {
     try {
       const result = await this.pool.query(
-        `SELECT id, organization_id, phone_number, api_id, api_hash, session_string
+        `SELECT id, organization_id, phone_number, api_id, api_hash, session_string, session_encrypted
          FROM bd_accounts
          WHERE is_active = true AND (is_demo IS NOT TRUE) AND session_string IS NOT NULL AND session_string != ''`
       );
@@ -4919,15 +4924,17 @@ export class TelegramManager {
         try {
           // Use organization_id as userId fallback (will be replaced when user connects)
           const userId = account.organization_id;
-          
+          const apiHash = decryptIfNeeded(account.api_hash, account.session_encrypted) || account.api_hash;
+          const sessionStr = decryptIfNeeded(account.session_string, account.session_encrypted) || account.session_string;
+
           await this.connectAccount(
             account.id,
             account.organization_id,
             userId,
             account.phone_number,
             parseInt(account.api_id),
-            account.api_hash,
-            account.session_string
+            apiHash,
+            sessionStr
           );
         } catch (error) {
           this.log.error({ message: `Failed to initialize account ${account.id}`, error: error?.message || String(error) });
@@ -4989,8 +4996,8 @@ export class TelegramManager {
     try {
       const sessionString = client.session.save() as string;
       await this.pool.query(
-        'UPDATE bd_accounts SET session_string = $1, last_activity = NOW() WHERE id = $2',
-        [sessionString, accountId]
+        'UPDATE bd_accounts SET session_string = $1, session_encrypted = true, last_activity = NOW() WHERE id = $2',
+        [encryptSession(sessionString), accountId]
       );
     } catch (error) {
       this.log.error({ message: `Error saving session for account ${accountId}`, error: error?.message || String(error) });

@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { Logger } from '@getsale/logger';
 import { CampaignStatus } from '@getsale/types';
 import { ServiceHttpClient } from '@getsale/service-core';
@@ -6,10 +6,14 @@ import {
   Schedule, StepConditions,
   evaluateStepConditions, isWithinSchedule, nextSendAtWithSchedule,
   delayHoursFromStep, nextSlotRetry, substituteVariables, ensureLeadInPipeline,
+  getSentTodayByAccount,
 } from './helpers';
+import type { CampaignStep, DueParticipantRow } from './types';
 
 const CAMPAIGN_SEND_INTERVAL_MS = parseInt(String(process.env.CAMPAIGN_SEND_INTERVAL_MS || 60000), 10);
 const CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY = parseInt(String(process.env.CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY || 40), 10);
+const SEND_MAX_RETRIES = 3;
+const CAMPAIGN_BATCH_SIZE = 20;
 
 export interface CampaignLoopDeps {
   pool: Pool;
@@ -17,6 +21,13 @@ export interface CampaignLoopDeps {
   messagingClient: ServiceHttpClient;
   pipelineClient: ServiceHttpClient;
   bdAccountsClient: ServiceHttpClient;
+}
+
+interface CampaignMeta {
+  schedule: Schedule;
+  sendDelaySeconds: number;
+  pipeline_id: string | null;
+  lead_creation_settings: { trigger?: string; default_stage_id?: string; default_responsible_id?: string } | null;
 }
 
 export function startCampaignLoop(deps: CampaignLoopDeps): void {
@@ -51,84 +62,254 @@ async function simulateHumanBehavior(
   await new Promise((r) => setTimeout(r, typingDelay));
 }
 
+async function fetchDueParticipant(client: PoolClient): Promise<DueParticipantRow | null> {
+  const due = await client.query(
+    `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id
+     FROM campaign_participants cp
+     JOIN campaigns c ON c.id = cp.campaign_id
+     WHERE c.status = $1 AND cp.status IN ('pending', 'sent') AND cp.next_send_at IS NOT NULL AND cp.next_send_at <= NOW()
+     ORDER BY cp.next_send_at
+     LIMIT 1
+     FOR UPDATE OF cp SKIP LOCKED`,
+    [CampaignStatus.ACTIVE]
+  );
+  return due.rows.length > 0 ? due.rows[0] as DueParticipantRow : null;
+}
+
+function checkDailyLimits(sentMap: Map<string, number>, accountId: string, dailyLimit: number): boolean {
+  return (sentMap.get(accountId) ?? 0) < dailyLimit;
+}
+
+async function loadCampaignMeta(
+  pool: Pool,
+  campaignId: string,
+  cache: Map<string, CampaignMeta>
+): Promise<CampaignMeta | undefined> {
+  if (cache.has(campaignId)) return cache.get(campaignId);
+
+  const campaignsRes = await pool.query(
+    'SELECT id, schedule, target_audience, pipeline_id, lead_creation_settings FROM campaigns WHERE id = $1',
+    [campaignId]
+  );
+  const c = campaignsRes.rows[0];
+  if (!c) return undefined;
+
+  const schedule = (c.schedule as Schedule) ?? null;
+  const aud = (c.target_audience || {}) as { sendDelaySeconds?: number };
+  const lcs = c.lead_creation_settings as CampaignMeta['lead_creation_settings'];
+  const meta: CampaignMeta = {
+    schedule,
+    sendDelaySeconds: Math.max(0, aud.sendDelaySeconds ?? 0),
+    pipeline_id: c.pipeline_id ?? null,
+    lead_creation_settings: lcs ?? null,
+  };
+  cache.set(campaignId, meta);
+  return meta;
+}
+
+async function loadCampaignSteps(
+  pool: Pool,
+  campaignId: string,
+  cache: Map<string, CampaignStep[]>
+): Promise<CampaignStep[]> {
+  if (cache.has(campaignId)) return cache.get(campaignId)!;
+
+  const seq = await pool.query(
+    `SELECT cs.id, cs.order_index, cs.template_id, cs.delay_hours, cs.delay_minutes, cs.trigger_type, cs.conditions, ct.content
+     FROM campaign_sequences cs
+     JOIN campaign_templates ct ON ct.id = cs.template_id
+     WHERE cs.campaign_id = $1 ORDER BY cs.order_index`,
+    [campaignId]
+  );
+  const steps = seq.rows as CampaignStep[];
+  cache.set(campaignId, steps);
+  return steps;
+}
+
+async function advanceToNextStep(
+  client: PoolClient,
+  participantId: string,
+  currentStep: number,
+  steps: CampaignStep[],
+  schedule: Schedule
+): Promise<void> {
+  const nextStep = steps[currentStep + 1];
+  if (nextStep) {
+    const nextTriggerType = nextStep.trigger_type || 'delay';
+    const nextSendAt =
+      nextTriggerType === 'after_reply'
+        ? null
+        : nextSendAtWithSchedule(new Date(), delayHoursFromStep(nextStep), schedule);
+    await client.query(
+      `UPDATE campaign_participants SET current_step = $1, status = 'sent', next_send_at = $2, updated_at = NOW() WHERE id = $3`,
+      [currentStep + 1, nextSendAt, participantId]
+    );
+  } else {
+    await client.query(
+      `UPDATE campaign_participants SET current_step = $1, status = 'completed', next_send_at = NULL, updated_at = NOW() WHERE id = $2`,
+      [currentStep + 1, participantId]
+    );
+  }
+}
+
+async function sendMessageWithRetry(
+  messagingClient: ServiceHttpClient,
+  payload: { contactId: string; channelId: string; content: string; bdAccountId: string },
+  headers: { userId: string; organizationId: string },
+  maxRetries: number,
+  log: Logger
+): Promise<{ id?: string }> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await messagingClient.post<{ id?: string }>('/api/messaging/send', {
+        contactId: payload.contactId,
+        channel: 'telegram',
+        channelId: payload.channelId,
+        content: payload.content,
+        bdAccountId: payload.bdAccountId,
+        source: 'campaign',
+      }, undefined, { userId: headers.userId, organizationId: headers.organizationId });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries) {
+        const backoff = attempt * 2000;
+        log.info({ message: 'Campaign send retry', attempt, backoffMs: backoff });
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+async function markCompletedCampaigns(pool: Pool, campaignIds: Set<string>): Promise<void> {
+  if (campaignIds.size === 0) return;
+
+  const ids = Array.from(campaignIds);
+  const completed = await pool.query(
+    `SELECT c.id FROM campaigns c
+     WHERE c.id = ANY($1::uuid[]) AND c.status = $2
+     AND NOT EXISTS (
+       SELECT 1 FROM campaign_participants cp
+       WHERE cp.campaign_id = c.id AND cp.status NOT IN ('completed', 'replied', 'failed')
+     )
+     AND EXISTS (SELECT 1 FROM campaign_participants cp WHERE cp.campaign_id = c.id)`,
+    [ids, CampaignStatus.ACTIVE]
+  );
+  for (const r of completed.rows) {
+    await pool.query(
+      "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2",
+      [CampaignStatus.COMPLETED, r.id]
+    );
+  }
+}
+
+async function processParticipant(
+  client: PoolClient,
+  pool: Pool,
+  row: DueParticipantRow,
+  step: CampaignStep,
+  steps: CampaignStep[],
+  meta: CampaignMeta | undefined,
+  sentMap: Map<string, number>,
+  deps: CampaignLoopDeps
+): Promise<void> {
+  const { log, messagingClient, pipelineClient, bdAccountsClient } = deps;
+  const schedule = meta?.schedule ?? null;
+
+  const contactRes = await pool.query(
+    `SELECT c.first_name, c.last_name, c.email, c.phone, c.telegram_id, co.name as company_name
+     FROM contacts c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1`,
+    [row.contact_id]
+  );
+  const contact = contactRes.rows[0] || {};
+  const company = contact.company_name != null ? { name: contact.company_name } : null;
+
+  const conditions = step.conditions as StepConditions | null;
+  const shouldSend = await evaluateStepConditions(
+    pool, row.organization_id, row.contact_id, conditions, contact, row.status
+  );
+  if (!shouldSend) {
+    await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule);
+    await client.query('COMMIT');
+    return;
+  }
+
+  const userRow = await pool.query('SELECT id FROM users WHERE organization_id = $1 LIMIT 1', [row.organization_id]);
+  const systemUserId = userRow.rows[0]?.id || '';
+  const content = substituteVariables(step.content || '', contact, company);
+
+  await simulateHumanBehavior(bdAccountsClient, row.bd_account_id, row.channel_id, content.length, row.organization_id, log);
+
+  let msgJson: { id?: string };
+  try {
+    msgJson = await sendMessageWithRetry(
+      messagingClient,
+      { contactId: row.contact_id, channelId: row.channel_id, content, bdAccountId: row.bd_account_id },
+      { userId: systemUserId, organizationId: row.organization_id },
+      SEND_MAX_RETRIES,
+      log
+    );
+  } catch (sendErr) {
+    await client.query(
+      `UPDATE campaign_participants SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify({ lastError: sendErr instanceof Error ? sendErr.message : String(sendErr), attempts: SEND_MAX_RETRIES }), row.participant_id]
+    );
+    await client.query('COMMIT');
+    log.warn({ message: 'Campaign send failed after retries', participantId: row.participant_id, attempts: SEND_MAX_RETRIES, error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
+    return;
+  }
+
+  await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule);
+  await client.query(
+    `INSERT INTO campaign_sends (campaign_participant_id, sequence_step, message_id, sent_at, status) VALUES ($1, $2, $3, NOW(), 'sent')`,
+    [row.participant_id, row.current_step, msgJson?.id || null]
+  );
+  await client.query('COMMIT');
+  sentMap.set(row.bd_account_id, (sentMap.get(row.bd_account_id) ?? 0) + 1);
+
+  const lcs = meta?.lead_creation_settings;
+  const pipelineId = meta?.pipeline_id;
+  if (row.current_step === 0 && lcs?.trigger === 'on_first_send' && pipelineId) {
+    let stageId = lcs.default_stage_id || null;
+    if (!stageId) {
+      const stageRow = await pool.query(
+        'SELECT id FROM stages WHERE pipeline_id = $1 AND organization_id = $2 ORDER BY order_index ASC LIMIT 1',
+        [pipelineId, row.organization_id]
+      );
+      stageId = stageRow.rows[0]?.id || null;
+    }
+    if (stageId) await ensureLeadInPipeline(pipelineClient, log, row.organization_id, row.contact_id, pipelineId, stageId, systemUserId, lcs?.default_responsible_id);
+  }
+
+  const sendDelaySeconds = meta?.sendDelaySeconds ?? 0;
+  if (sendDelaySeconds > 0) await new Promise((r) => setTimeout(r, sendDelaySeconds * 1000));
+}
+
 async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
-  const { pool, log, messagingClient, pipelineClient, bdAccountsClient } = deps;
+  const { pool, log } = deps;
 
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const sentTodayByAccount = await pool.query(
-      `SELECT cp.bd_account_id, COUNT(*)::int AS cnt
-       FROM campaign_sends cs
-       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
-       JOIN campaigns c ON c.id = cp.campaign_id
-       WHERE cs.sent_at::date = $1::date
-       GROUP BY cp.bd_account_id`,
-      [today]
-    );
-    const sentMap = new Map((sentTodayByAccount.rows as { bd_account_id: string; cnt: number }[]).map((r) => [r.bd_account_id, r.cnt]));
-    const campaignMeta = new Map<string, {
-      schedule: Schedule;
-      sendDelaySeconds: number;
-      pipeline_id: string | null;
-      lead_creation_settings: { trigger?: string; default_stage_id?: string; default_responsible_id?: string } | null;
-    }>();
-    const stepsByCampaign = new Map<string, any[]>();
+    const sentMap = await getSentTodayByAccount(pool);
+    const campaignMetaCache = new Map<string, CampaignMeta>();
+    const stepsCache = new Map<string, CampaignStep[]>();
     const processedCampaignIds = new Set<string>();
-    const BATCH = 20;
 
-    for (let i = 0; i < BATCH; i++) {
+    for (let i = 0; i < CAMPAIGN_BATCH_SIZE; i++) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const due = await client.query(
-          `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id
-           FROM campaign_participants cp
-           JOIN campaigns c ON c.id = cp.campaign_id
-           WHERE c.status = $1 AND cp.status IN ('pending', 'sent') AND cp.next_send_at IS NOT NULL AND cp.next_send_at <= NOW()
-           ORDER BY cp.next_send_at
-           LIMIT 1
-           FOR UPDATE OF cp SKIP LOCKED`,
-          [CampaignStatus.ACTIVE]
-        );
-        if (due.rows.length === 0) {
+
+        const row = await fetchDueParticipant(client);
+        if (!row) {
           await client.query('COMMIT');
           break;
         }
-        const row = due.rows[0] as any;
         processedCampaignIds.add(row.campaign_id);
 
-        if (!campaignMeta.has(row.campaign_id)) {
-          const campaignsRes = await pool.query(
-            'SELECT id, schedule, target_audience, pipeline_id, lead_creation_settings FROM campaigns WHERE id = $1',
-            [row.campaign_id]
-          );
-          const c = campaignsRes.rows[0];
-          if (c) {
-            const schedule = (c.schedule as Schedule) ?? null;
-            const aud = (c.target_audience || {}) as { sendDelaySeconds?: number };
-            const lcs = c.lead_creation_settings as { trigger?: string; default_stage_id?: string; default_responsible_id?: string } | null;
-            campaignMeta.set(c.id, {
-              schedule,
-              sendDelaySeconds: Math.max(0, aud.sendDelaySeconds ?? 0),
-              pipeline_id: c.pipeline_id ?? null,
-              lead_creation_settings: lcs ?? null,
-            });
-          }
-        }
-        if (!stepsByCampaign.has(row.campaign_id)) {
-          const seq = await pool.query(
-            `SELECT cs.id, cs.order_index, cs.template_id, cs.delay_hours, cs.delay_minutes, cs.trigger_type, cs.conditions, ct.content
-             FROM campaign_sequences cs
-             JOIN campaign_templates ct ON ct.id = cs.template_id
-             WHERE cs.campaign_id = $1 ORDER BY cs.order_index`,
-            [row.campaign_id]
-          );
-          stepsByCampaign.set(row.campaign_id, seq.rows);
-        }
-
-        const meta = campaignMeta.get(row.campaign_id);
+        const meta = await loadCampaignMeta(pool, row.campaign_id, campaignMetaCache);
+        const steps = await loadCampaignSteps(pool, row.campaign_id, stepsCache);
         const schedule = meta?.schedule ?? null;
-        const sendDelaySeconds = meta?.sendDelaySeconds ?? 0;
 
         if (!isWithinSchedule(schedule)) {
           await client.query(
@@ -139,9 +320,8 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
           continue;
         }
 
-        const sentToday = sentMap.get(row.bd_account_id) ?? 0;
-        if (sentToday >= CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY) {
-          const tomorrowStart = new Date(today + 'T00:00:00.000Z');
+        if (!checkDailyLimits(sentMap, row.bd_account_id, CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY)) {
+          const tomorrowStart = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z');
           tomorrowStart.setUTCDate(tomorrowStart.getUTCDate() + 1);
           await client.query(
             `UPDATE campaign_participants SET next_send_at = $1, updated_at = NOW() WHERE id = $2`,
@@ -151,7 +331,6 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
           continue;
         }
 
-        const steps = stepsByCampaign.get(row.campaign_id) || [];
         const step = steps[row.current_step];
         if (!step) {
           const reason = { no_sequence_step: true, current_step: row.current_step };
@@ -164,122 +343,7 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
           continue;
         }
 
-        const contactRes = await pool.query(
-          `SELECT c.first_name, c.last_name, c.email, c.phone, c.telegram_id, co.name as company_name
-           FROM contacts c LEFT JOIN companies co ON co.id = c.company_id WHERE c.id = $1`,
-          [row.contact_id]
-        );
-        const contact = contactRes.rows[0] || {};
-        const company = contact.company_name != null ? { name: contact.company_name } : null;
-
-        const conditions = (step as { conditions?: StepConditions }).conditions;
-        const shouldSend = await evaluateStepConditions(
-          pool,
-          row.organization_id,
-          row.contact_id,
-          conditions,
-          contact,
-          row.status
-        );
-        if (!shouldSend) {
-          const nextStep = steps[row.current_step + 1];
-          const now = new Date();
-          if (nextStep) {
-            const nextTriggerType = (nextStep as { trigger_type?: string }).trigger_type || 'delay';
-            const nextSendAt =
-              nextTriggerType === 'after_reply'
-                ? null
-                : nextSendAtWithSchedule(now, delayHoursFromStep(nextStep), schedule);
-            await client.query(
-              `UPDATE campaign_participants SET current_step = $1, status = 'sent', next_send_at = $2, updated_at = NOW() WHERE id = $3`,
-              [row.current_step + 1, nextSendAt, row.participant_id]
-            );
-          } else {
-            await client.query(
-              `UPDATE campaign_participants SET current_step = $1, status = 'completed', next_send_at = NULL, updated_at = NOW() WHERE id = $2`,
-              [row.current_step + 1, row.participant_id]
-            );
-          }
-          await client.query('COMMIT');
-          continue;
-        }
-
-        const userRow = await pool.query('SELECT id FROM users WHERE organization_id = $1 LIMIT 1', [row.organization_id]);
-        const systemUserId = userRow.rows[0]?.id || '';
-        const content = substituteVariables(step.content || '', contact, company);
-
-        await simulateHumanBehavior(bdAccountsClient, row.bd_account_id, row.channel_id, content.length, row.organization_id, log);
-
-        let msgJson: { id?: string } | null = null;
-        const SEND_MAX_RETRIES = 3;
-        for (let attempt = 1; attempt <= SEND_MAX_RETRIES; attempt++) {
-          try {
-            msgJson = await messagingClient.post<{ id?: string }>('/api/messaging/send', {
-              contactId: row.contact_id,
-              channel: 'telegram',
-              channelId: row.channel_id,
-              content,
-              bdAccountId: row.bd_account_id,
-              source: 'campaign',
-            }, undefined, { userId: systemUserId, organizationId: row.organization_id });
-            break;
-          } catch (sendErr) {
-            if (attempt >= SEND_MAX_RETRIES) {
-              await client.query(
-                `UPDATE campaign_participants SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
-                [JSON.stringify({ lastError: sendErr instanceof Error ? sendErr.message : String(sendErr), attempts: attempt }), row.participant_id]
-              );
-              await client.query('COMMIT');
-              log.warn({ message: 'Campaign send failed after retries', participantId: row.participant_id, attempts: attempt, error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
-            } else {
-              const backoff = attempt * 2000;
-              log.info({ message: 'Campaign send retry', participantId: row.participant_id, attempt, backoffMs: backoff });
-              await new Promise((r) => setTimeout(r, backoff));
-            }
-          }
-        }
-        if (!msgJson) continue;
-
-        const nextStep = steps[row.current_step + 1];
-        const now = new Date();
-        if (nextStep) {
-          const nextTriggerType = (nextStep as { trigger_type?: string }).trigger_type || 'delay';
-          const nextSendAt =
-            nextTriggerType === 'after_reply'
-              ? null
-              : nextSendAtWithSchedule(now, delayHoursFromStep(nextStep), schedule);
-          await client.query(
-            `UPDATE campaign_participants SET current_step = $1, status = 'sent', next_send_at = $2, updated_at = NOW() WHERE id = $3`,
-            [row.current_step + 1, nextSendAt, row.participant_id]
-          );
-        } else {
-          await client.query(
-            `UPDATE campaign_participants SET current_step = $1, status = 'completed', next_send_at = NULL, updated_at = NOW() WHERE id = $2`,
-            [row.current_step + 1, row.participant_id]
-          );
-        }
-        await client.query(
-          `INSERT INTO campaign_sends (campaign_participant_id, sequence_step, message_id, sent_at, status) VALUES ($1, $2, $3, NOW(), 'sent')`,
-          [row.participant_id, row.current_step, msgJson?.id || null]
-        );
-        await client.query('COMMIT');
-        sentMap.set(row.bd_account_id, (sentMap.get(row.bd_account_id) ?? 0) + 1);
-
-        const lcs = meta?.lead_creation_settings;
-        const pipelineId = meta?.pipeline_id;
-        if (row.current_step === 0 && lcs?.trigger === 'on_first_send' && pipelineId) {
-          let stageId = lcs.default_stage_id || null;
-          if (!stageId) {
-            const stageRow = await pool.query(
-              'SELECT id FROM stages WHERE pipeline_id = $1 AND organization_id = $2 ORDER BY order_index ASC LIMIT 1',
-              [pipelineId, row.organization_id]
-            );
-            stageId = stageRow.rows[0]?.id || null;
-          }
-          if (stageId) await ensureLeadInPipeline(pipelineClient, log, row.organization_id, row.contact_id, pipelineId, stageId, systemUserId, lcs?.default_responsible_id);
-        }
-
-        if (sendDelaySeconds > 0) await new Promise((r) => setTimeout(r, sendDelaySeconds * 1000));
+        await processParticipant(client, pool, row, step, steps, meta, sentMap, deps);
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
         throw e;
@@ -288,25 +352,7 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
       }
     }
 
-    if (processedCampaignIds.size > 0) {
-      const campaignIds = Array.from(processedCampaignIds);
-      const completed = await pool.query(
-        `SELECT c.id FROM campaigns c
-         WHERE c.id = ANY($1::uuid[]) AND c.status = $2
-         AND NOT EXISTS (
-           SELECT 1 FROM campaign_participants cp
-           WHERE cp.campaign_id = c.id AND cp.status NOT IN ('completed', 'replied', 'failed')
-         )
-         AND EXISTS (SELECT 1 FROM campaign_participants cp WHERE cp.campaign_id = c.id)`,
-        [campaignIds, CampaignStatus.ACTIVE]
-      );
-      for (const r of completed.rows) {
-        await pool.query(
-          "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2",
-          [CampaignStatus.COMPLETED, r.id]
-        );
-      }
-    }
+    await markCompletedCampaigns(pool, processedCampaignIds);
   } catch (err) {
     log.error({ message: 'Campaign send worker error', error: String(err) });
   }

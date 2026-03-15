@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { BarChart3, TrendingUp, Users, DollarSign } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { apiClient } from '@/lib/api/client';
 
 type PeriodKey = 'today' | 'week' | 'month' | 'year';

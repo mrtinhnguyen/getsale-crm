@@ -1,3 +1,4 @@
+# Override secrets in .env for production — see .env.example
 services:
   # ==================== Infrastructure ====================
   
@@ -46,7 +47,8 @@ services:
       RABBITMQ_DEFAULT_PASS: getsale_dev
     ports:
       - "5672:5672"   # AMQP
-      - "15672:15672" # Management UI
+      # Management UI (15672) not exposed; use `docker exec -it getsale-rabbitmq rabbitmq-diagnostics` or
+      # `docker exec -it getsale-rabbitmq rabbitmqctl` when needed
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -254,6 +256,7 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres_dev}@pgbouncer:5432/postgres
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev}@redis:6379
       - RABBITMQ_URL=amqp://getsale:getsale_dev@rabbitmq:5672
+      - JWT_SECRET=${JWT_SECRET:-dev_jwt_secret_change_in_production}
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - AUTH_SERVICE_URL=http://auth-service:3001
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173}
@@ -327,6 +330,7 @@ services:
       - RABBITMQ_URL=amqp://getsale:getsale_dev@rabbitmq:5672
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -364,6 +368,7 @@ services:
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - SESSION_ENCRYPTION_KEY=${SESSION_ENCRYPTION_KEY:-dev_session_encryption_key_change_in_production}
     depends_on:
       postgres:
         condition: service_healthy

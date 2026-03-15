@@ -137,12 +137,6 @@ export async function parseStart(payload: {
   return data;
 }
 
-/** Unified SSE stream URL (progress + notifications). Use useEventsStream() and subscribe('parse_progress' | 'sync_progress' | 'notification'). */
-export function getEventsStreamUrl(): string {
-  const base = typeof window !== 'undefined' ? window.location.origin : (process.env.NEXT_PUBLIC_API_URL || '');
-  return `${base}/api/events/stream`;
-}
-
 export async function parsePause(taskId: string): Promise<{ taskId: string; status: string }> {
   const { data } = await apiClient.post<{ taskId: string; status: string }>(`/api/crm/parse/pause/${taskId}`);
   return data;

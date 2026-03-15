@@ -49,6 +49,19 @@ export function verifyRefreshToken(token: string): { userId: string } {
   return jwt.verify(token, JWT_REFRESH_SECRET) as { userId: string };
 }
 
+/** Short-lived JWT for 2FA login flow — contains userId + purpose='mfa', 5 min expiry. */
+export function signTempToken(userId: string): string {
+  return jwt.sign({ userId, purpose: 'mfa' }, JWT_SECRET, { expiresIn: '5m' });
+}
+
+export function verifyTempToken(token: string): { userId: string } {
+  const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; purpose?: string };
+  if (decoded.purpose !== 'mfa') {
+    throw new AppError(401, 'Invalid token', ErrorCodes.UNAUTHORIZED);
+  }
+  return { userId: decoded.userId };
+}
+
 /** Get payload from cookie (httpOnly) or Authorization header. */
 export function extractBearerToken(req: Request, tokenFromCookie?: string | null): JwtPayload {
   const token = tokenFromCookie ?? req.headers.authorization?.replace(/^Bearer\s+/i, '')?.trim();

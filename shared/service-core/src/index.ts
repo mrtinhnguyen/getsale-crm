@@ -29,3 +29,5 @@ export {
 } from './service-app';
 
 export { parseLimit } from './query-utils';
+
+export { withOrgContext } from './rls';

@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Pause, Square } from 'lucide-react';
-import Button from '@/components/ui/Button';
-import { useEventsStream } from '@/lib/contexts/events-stream-context';
+import { Button } from '@/components/ui/Button';
+import { useWebSocketContext } from '@/lib/contexts/websocket-context';
 import { parsePause, parseStop } from '@/lib/api/discovery';
 
 interface ParseProgressPanelProps {
@@ -30,19 +30,22 @@ export default function ParseProgressPanel({ taskId, onStopped }: ParseProgressP
   const [event, setEvent] = useState<ProgressEvent | null>(null);
   const [pausing, setPausing] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const { subscribe } = useEventsStream();
+  const { on, off } = useWebSocketContext();
 
   useEffect(() => {
-    const unsub = subscribe('parse_progress', (data: Record<string, unknown>) => {
-      if ((data.taskId as string) !== taskId) return;
+    const handler = (payload: { type?: string; data?: Record<string, unknown> }) => {
+      if (payload?.type !== 'parse_progress') return;
+      const data = payload.data;
+      if (!data || (data.taskId as string) !== taskId) return;
       setEvent(data as ProgressEvent);
       const status = data.status as string;
       if (status === 'completed' || status === 'stopped' || status === 'failed') {
         onStopped?.();
       }
-    });
-    return unsub;
-  }, [taskId, onStopped, subscribe]);
+    };
+    on('event', handler);
+    return () => off('event', handler);
+  }, [taskId, onStopped, on, off]);
 
   const handlePause = async () => {
     setPausing(true);

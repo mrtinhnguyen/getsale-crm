@@ -2,6 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { apiClient } from '@/lib/api/client';
+import { reportError } from '@/lib/error-reporter';
 import { setCurrentMessagingChat } from '@/lib/messaging-open-chat';
 import {
   fetchContactNotes, fetchContactReminders,
@@ -34,7 +35,7 @@ export function useMessagingData(s: MessagingState) {
         s.setSelectedAccountId(sorted[0].id);
       }
     } catch (error) {
-      console.error('Error fetching accounts:', error);
+      reportError(error, { component: 'useMessagingData', action: 'fetchAccounts' });
     } finally {
       s.setLoading(false);
     }
@@ -58,7 +59,7 @@ export function useMessagingData(s: MessagingState) {
       s.setChats(formattedChats);
       return formattedChats;
     } catch (error) {
-      console.error('Error fetching chats:', error);
+      reportError(error, { component: 'useMessagingData', action: 'fetchChats' });
       s.setChats([]);
       return [];
     } finally {
@@ -88,7 +89,7 @@ export function useMessagingData(s: MessagingState) {
       s.setHistoryExhausted(response.data.historyExhausted === true);
       s.setLastLoadedChannelId(chat.channel_id);
     } catch (error) {
-      console.error('Error fetching messages:', error);
+      reportError(error, { component: 'useMessagingData', action: 'fetchMessages' });
       s.setMessages([]);
       s.setMessagesTotal(0);
       s.setHistoryExhausted(false);
@@ -180,7 +181,7 @@ export function useMessagingData(s: MessagingState) {
         const chatsFromDB = Array.isArray(res.data) ? res.data : [];
         s.setChats(mapRawChatsToChatList(chatsFromDB as Record<string, unknown>[]));
       })
-      .catch((err) => { if (!cancelled) { console.error('Error fetching chats:', err); s.setChats([]); } })
+      .catch((err) => { if (!cancelled) { reportError(err, { component: 'useMessagingData', action: 'autoFetchChats' }); s.setChats([]); } })
       .finally(() => { if (!cancelled) s.setLoadingChats(false); });
     return () => { cancelled = true; };
   }, [s.selectedAccountId]);

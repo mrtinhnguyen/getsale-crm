@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import axios from 'axios';
+import { authApi } from '@/lib/api/auth';
 
 interface User {
   id: string;
@@ -27,14 +27,6 @@ interface AuthState {
   refreshUser: () => Promise<void>;
 }
 
-// In the browser use same origin ('') so all auth requests (signin, refresh, me, etc.) go to
-// the app origin (e.g. app.getsale.ai). Next.js rewrites /api/* to the gateway; cookies are then
-// set and sent for the same domain. On the server (SSR) use env URL for gateway calls.
-const API_BASE_URL = typeof window !== 'undefined'
-  ? ''
-  : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
-const axiosConfig = { withCredentials: true };
-
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
@@ -43,11 +35,7 @@ export const useAuthStore = create<AuthState>()(
       workspaces: null,
 
       login: async (email: string, password: string) => {
-        const response = await axios.post(
-          `${API_BASE_URL}/api/auth/signin`,
-          { email, password },
-          axiosConfig
-        );
+        const response = await authApi.post('/signin', { email, password });
         const { user } = response.data;
         set({ user, isAuthenticated: true });
       },
@@ -56,24 +44,20 @@ export const useAuthStore = create<AuthState>()(
         const body: Record<string, unknown> = { email, password };
         if (inviteToken) body.inviteToken = inviteToken;
         else body.organizationName = organizationName ?? 'My Organization';
-        const response = await axios.post(`${API_BASE_URL}/api/auth/signup`, body, axiosConfig);
+        const response = await authApi.post('/signup', body);
         const { user } = response.data;
         set({ user, isAuthenticated: true });
       },
 
       logout: async () => {
         try {
-          await axios.post(`${API_BASE_URL}/api/auth/logout`, {}, axiosConfig);
+          await authApi.post('/logout', {});
         } catch (_) {}
         set({ user: null, isAuthenticated: false, workspaces: null });
       },
 
       refreshAccessToken: async () => {
-        const response = await axios.post<{ user: User }>(
-          `${API_BASE_URL}/api/auth/refresh`,
-          {},
-          axiosConfig
-        );
+        const response = await authApi.post<{ user: User }>('/refresh', {});
         const { user } = response.data;
         if (user) set({ user });
       },
@@ -82,10 +66,7 @@ export const useAuthStore = create<AuthState>()(
         const { user } = get();
         if (!user) return;
         try {
-          const response = await axios.get<Workspace[]>(
-            `${API_BASE_URL}/api/auth/workspaces`,
-            axiosConfig
-          );
+          const response = await authApi.get<Workspace[]>('/workspaces');
           set({ workspaces: response.data });
         } catch {
           set({ workspaces: [] });
@@ -95,14 +76,9 @@ export const useAuthStore = create<AuthState>()(
       switchWorkspace: async (organizationId: string) => {
         const { user } = get();
         if (!user) throw new Error('Not authenticated');
-        const response = await axios.post<{ user: User }>(
-          `${API_BASE_URL}/api/auth/switch-workspace`,
-          { organizationId },
-          axiosConfig
-        );
+        const response = await authApi.post<{ user: User }>('/switch-workspace', { organizationId });
         const { user: newUser } = response.data;
         set({ user: newUser });
-        // Persist new user to localStorage before redirect so rehydration after reload uses correct workspace.
         if (typeof window !== 'undefined') {
           const key = 'auth-storage';
           const payload = { state: { user: newUser, isAuthenticated: true }, version: 0 };
@@ -115,10 +91,9 @@ export const useAuthStore = create<AuthState>()(
 
       refreshUser: async () => {
         try {
-          const response = await axios.get<{ id: string; email: string; organizationId: string; role: string }>(
-            `${API_BASE_URL}/api/auth/me`,
+          const response = await authApi.get<{ id: string; email: string; organizationId: string; role: string }>(
+            '/me',
             {
-              ...axiosConfig,
               params: { _: typeof window !== 'undefined' ? Date.now() : 0 },
               headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
             }

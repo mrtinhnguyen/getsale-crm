@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import Link from 'next/link';
 import { Input } from '@/components/ui/Input';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 
 export default function LoginPage() {
   const { t } = useTranslation();
@@ -26,7 +26,11 @@ export default function LoginPage() {
       await login(email, password);
       router.push('/dashboard');
     } catch (err: unknown) {
-      setError((err as { message?: string })?.message || t('auth.loginError'));
+      const serverMessage =
+        (err as any)?.response?.data?.error
+        || (err as any)?.response?.data?.message
+        || (err as Error)?.message;
+      setError(serverMessage || t('auth.loginError'));
     } finally {
       setLoading(false);
     }

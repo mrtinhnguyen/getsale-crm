@@ -26,7 +26,7 @@ import ParseSettingsForm from '@/components/parsing/ParseSettingsForm';
 import ParseProgressPanel from '@/components/parsing/ParseProgressPanel';
 import ParseResultSummary from '@/components/parsing/ParseResultSummary';
 import type { ParseResult } from '@/lib/api/discovery';
-import Button from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { Pagination } from '@/components/ui/Pagination';
 import clsx from 'clsx';

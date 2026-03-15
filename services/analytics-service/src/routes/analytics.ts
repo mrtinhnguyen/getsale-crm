@@ -36,6 +36,18 @@ export function getPeriodBounds(period: PeriodKey): { startDate: string; endDate
   };
 }
 
+function sanitizeCsvCell(value: unknown): string {
+  if (value == null) return '';
+  const str = typeof value === 'string' ? value : String(value);
+  if (/^[=+\-@\t\r]/.test(str)) {
+    return `'${str}`;
+  }
+  if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
 export function analyticsRouter({ pool, log }: Deps): Router {
   const router = Router();
 
@@ -261,10 +273,11 @@ export function analyticsRouter({ pool, log }: Deps): Router {
     );
 
     if (format === 'csv') {
+      const headers = ['id', 'organization_id', 'metric_type', 'metric_name', 'value', 'dimensions', 'recorded_at'];
       const csv = [
-        'id,organization_id,metric_type,metric_name,value,dimensions,recorded_at',
+        headers.join(','),
         ...result.rows.map((row: Record<string, unknown>) =>
-          `${row.id},${row.organization_id},${row.metric_type},${row.metric_name},${row.value},"${JSON.stringify(row.dimensions)}",${row.recorded_at}`
+          headers.map((h) => sanitizeCsvCell(h === 'dimensions' ? JSON.stringify(row[h]) : row[h])).join(',')
         ),
       ].join('\n');
 

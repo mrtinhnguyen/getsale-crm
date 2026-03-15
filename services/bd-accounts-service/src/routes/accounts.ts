@@ -3,8 +3,9 @@ import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
-import { TelegramManager } from '../telegram-manager';
+import { TelegramManager } from '../telegram';
 import { requireAccountOwner, requireBidiOwnAccount, getAccountOr404 } from '../helpers';
+import { decryptIfNeeded } from '../crypto';
 
 interface Deps {
   pool: Pool;
@@ -223,7 +224,7 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
     const { id } = req.params;
 
     const accountResult = await pool.query(
-      `SELECT id, organization_id, created_by_user_id, phone_number, api_id, api_hash, session_string
+      `SELECT id, organization_id, created_by_user_id, phone_number, api_id, api_hash, session_string, session_encrypted
        FROM bd_accounts WHERE id = $1 AND organization_id = $2`,
       [id, user.organizationId]
     );
@@ -242,6 +243,9 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       throw new AppError(400, 'Account has no session; reconnect via QR or phone', ErrorCodes.BAD_REQUEST);
     }
 
+    const apiHash = decryptIfNeeded(row.api_hash, row.session_encrypted) || row.api_hash;
+    const sessionString = decryptIfNeeded(row.session_string, row.session_encrypted) || row.session_string;
+
     await pool.query(
       'UPDATE bd_accounts SET is_active = true WHERE id = $1',
       [id]
@@ -253,8 +257,8 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       row.created_by_user_id || user.id,
       row.phone_number || '',
       parseInt(row.api_id, 10),
-      row.api_hash,
-      row.session_string
+      apiHash,
+      sessionString
     );
 
     res.json({ success: true });

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
-import { TelegramManager } from '../telegram-manager';
+import { TelegramManager } from '../telegram';
 import { getAccountOr404 } from '../helpers';
 
 interface Deps {
@@ -21,8 +21,13 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
 
     await getAccountOr404(pool, id, organizationId, 'id');
 
+    if (!telegramManager.isConnected(id)) {
+      log.warn({ message: 'Avatar not available: account offline', account_id: id });
+      throw new AppError(404, 'Avatar not available (account offline or no photo)', ErrorCodes.NOT_FOUND);
+    }
     const result = await telegramManager.downloadAccountProfilePhoto(id);
     if (!result) {
+      log.warn({ message: 'Avatar not available: no profile photo or download error', account_id: id });
       throw new AppError(404, 'Avatar not available (account offline or no photo)', ErrorCodes.NOT_FOUND);
     }
     res.setHeader('Content-Type', result.mimeType);
@@ -37,8 +42,13 @@ export function mediaRouter({ pool, log, telegramManager }: Deps): Router {
 
     await getAccountOr404(pool, id, organizationId, 'id');
 
+    if (!telegramManager.isConnected(id)) {
+      log.warn({ message: 'Chat avatar not available: account offline', account_id: id, chat_id: chatId });
+      throw new AppError(404, 'Chat avatar not available', ErrorCodes.NOT_FOUND);
+    }
     const result = await telegramManager.downloadChatProfilePhoto(id, chatId);
     if (!result) {
+      log.warn({ message: 'Chat avatar not available: no photo or download error', account_id: id, chat_id: chatId });
       throw new AppError(404, 'Chat avatar not available', ErrorCodes.NOT_FOUND);
     }
     res.setHeader('Content-Type', result.mimeType);

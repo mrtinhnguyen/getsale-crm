@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
-import { TelegramManager, type ResolvedSource } from '../telegram-manager';
+import { TelegramManager, type ResolvedSource } from '../telegram';
 import {
   getAccountOr404,
   requireAccountOwner,
@@ -161,7 +161,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       telegramManager.getDialogsAll(id, 1, { maxDialogs: 2000, delayEveryN: 100, delayMs: 600 }).catch(() => []),
     ]);
     const mergedById = new Map<string, any>();
-    for (const d of [...allDialogs0, ...allDialogs1]) {
+    for (const d of [...allDialogs0, ...allDialogs1] as { id: unknown }[]) {
       if (!mergedById.has(String(d.id))) mergedById.set(String(d.id), d);
     }
     const merged = Array.from(mergedById.values());
@@ -201,7 +201,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     if (result.rows.length === 0 && telegramManager.isConnected(id)) {
       try {
         const filters = await telegramManager.getDialogFilters(id);
-        const rows = filters.map((f, i) => ({
+        const rows = filters.map((f: { id: number; title?: string; isCustom?: boolean; emoticon?: string | null }, i: number) => ({
           id: `virtual-${f.id}`,
           folder_id: f.id,
           folder_title: (f.title || '').trim() || `Папка ${f.id}`,
@@ -838,7 +838,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     log.info({ message: `sync-start: ${numChats} chats to sync`, entity_id: id });
     res.json({ success: true, message: 'Sync started' });
 
-    telegramManager.syncHistory(id, account.organization_id).catch((err) => {
+    telegramManager.syncHistory(id, account.organization_id).catch((err: unknown) => {
       log.error({ message: 'Sync failed', entity_id: id, error: String(err) });
     });
   }));

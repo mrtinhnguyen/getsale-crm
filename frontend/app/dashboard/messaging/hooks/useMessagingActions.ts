@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { apiClient } from '@/lib/api/client';
+import { reportError } from '@/lib/error-reporter';
 import { useToast } from '@/lib/contexts/toast-context';
 import type { Chat, Message, SyncFolder, LeadContext } from '../types';
 import { MESSAGES_PAGE_SIZE, VIRTUAL_LIST_THRESHOLD, LOAD_OLDER_COOLDOWN_MS } from '../types';
@@ -86,7 +87,7 @@ export function useMessagingActions(
       s.setMessagesPage(nextPage);
       s.setMessagesTotal(response.data.pagination?.total ?? s.messagesTotal + list.length);
       s.setHistoryExhausted(response.data.historyExhausted === true);
-    } catch (error) { console.error('Error loading older messages:', error); }
+    } catch (error) { reportError(error, { component: 'useMessagingActions', action: 'loadOlderMessages' }); }
     finally { s.setLoadingOlder(false); }
   }, [s.selectedAccountId, s.selectedChat, s.loadingOlder, hasMoreMessages, s.messagesPage, s.messagesTotal, s.historyExhausted]);
 
@@ -138,7 +139,7 @@ export function useMessagingActions(
       if (s.selectedChat.conversation_id) s.setNewLeads((prev) => prev.filter((c) => c.conversation_id !== s.selectedChat!.conversation_id));
       await fetchChats();
     } catch (error: unknown) {
-      console.error('Error sending message:', error);
+      reportError(error, { component: 'useMessagingActions', action: 'sendMessage' });
       s.setMessages((prev) => prev.filter((m) => m.id !== tempMessage.id));
       const err = error as { response?: { status?: number; data?: { message?: string; error?: string } } };
       if (err.response?.status === 413) { toast.error(err.response.data?.message || 'Файл слишком большой. Максимальный размер 2 ГБ.'); }
@@ -154,7 +155,7 @@ export function useMessagingActions(
       const res = await apiClient.patch<Message>(`/api/messaging/messages/${messageId}/reaction`, { emoji });
       s.setMessages((prev) => prev.map((m) => m.id === messageId ? { ...m, reactions: res.data.reactions ?? m.reactions } : m));
     } catch (err: unknown) {
-      console.error('Error adding reaction:', err);
+      reportError(err, { component: 'useMessagingActions', action: 'addReaction' });
       toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('messaging.reactionError'));
     }
   }, [t, toast]);
@@ -163,7 +164,7 @@ export function useMessagingActions(
     s.setDeletingMessageId(messageId); s.setMessageContextMenu(null);
     try { await apiClient.delete(`/api/messaging/messages/${messageId}`); s.setMessages((prev) => prev.filter((m) => m.id !== messageId)); }
     catch (err: unknown) {
-      console.error('Error deleting message:', err);
+      reportError(err, { component: 'useMessagingActions', action: 'deleteMessage' });
       toast.error((err as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.message || (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Не удалось удалить сообщение');
     } finally { s.setDeletingMessageId(null); }
   }, [toast]);
@@ -192,7 +193,7 @@ export function useMessagingActions(
       s.setForwardModal(null); s.setForwardingToChatId(null);
       if (toChatId === s.selectedChat.channel_id) await fetchMessages(s.selectedAccountId, s.selectedChat);
     } catch (err: unknown) {
-      console.error('Error forwarding message:', err);
+      reportError(err, { component: 'useMessagingActions', action: 'forwardMessage' });
       toast.error((err as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.message || (err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('messaging.forwardError'));
     } finally { s.setForwardingToChatId(null); }
   }, [s.forwardModal, s.selectedAccountId, s.selectedChat, fetchMessages, t, toast]);
@@ -206,7 +207,7 @@ export function useMessagingActions(
       const res = await apiClient.get('/api/messaging/pinned-chats', { params: { bdAccountId: s.selectedAccountId } });
       const list = Array.isArray(res.data) ? res.data : [];
       s.setPinnedChannelIds(list.map((p: { channel_id: string }) => String(p.channel_id)));
-    } catch (err: unknown) { console.error('Error pinning chat:', err); }
+    } catch (err: unknown) { reportError(err, { component: 'useMessagingActions', action: 'pinChat' }); }
   }, [s.selectedAccountId]);
 
   const handleUnpinChat = useCallback(async (chat: Chat) => {
@@ -215,7 +216,7 @@ export function useMessagingActions(
     try {
       await apiClient.delete(`/api/messaging/pinned-chats/${chat.channel_id}`, { params: { bdAccountId: s.selectedAccountId } });
       s.setPinnedChannelIds((prev) => prev.filter((id) => id !== chat.channel_id));
-    } catch (err: unknown) { console.error('Error unpinning chat:', err); }
+    } catch (err: unknown) { reportError(err, { component: 'useMessagingActions', action: 'unpinChat' }); }
   }, [s.selectedAccountId]);
 
   const handleRemoveChat = useCallback(async (chat: Chat) => {
@@ -228,7 +229,7 @@ export function useMessagingActions(
       s.setPinnedChannelIds((prev) => prev.filter((id) => id !== chat.channel_id));
       if (s.selectedChat?.channel_id === chat.channel_id) { s.setSelectedChat(null); s.setMessages([]); }
     } catch (err: unknown) {
-      console.error('Error removing chat:', err);
+      reportError(err, { component: 'useMessagingActions', action: 'removeChat' });
       toast.error((err as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.message || (err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('messaging.deleteChatError'));
     }
   }, [s.selectedAccountId, s.selectedChat, t, toast]);
@@ -248,7 +249,7 @@ export function useMessagingActions(
       s.setChatContextMenu((prev) =>
         prev?.chat.channel_id === chat.channel_id ? { ...prev, chat: updated } : prev
       );
-    } catch (err: unknown) { console.error('Error updating chat folders:', err); }
+    } catch (err: unknown) { reportError(err, { component: 'useMessagingActions', action: 'updateChatFolders' }); }
   }, [s.selectedAccountId, chatFolderIds]);
 
   const handleChatFoldersClear = useCallback(async (chat: Chat) => {
@@ -260,7 +261,7 @@ export function useMessagingActions(
       s.setChatContextMenu((prev) =>
         prev?.chat.channel_id === chat.channel_id ? { ...prev, chat: updated } : prev
       );
-    } catch (err: unknown) { console.error('Error clearing chat folders:', err); }
+    } catch (err: unknown) { reportError(err, { component: 'useMessagingActions', action: 'clearChatFolders' }); }
   }, [s.selectedAccountId]);
 
   const handleCreateFolder = useCallback(async (folder_title: string, icon: string | null) => {
@@ -316,7 +317,7 @@ export function useMessagingActions(
       s.setSelectedChat((prev) => prev ? { ...prev, display_name: newName } : null);
       s.setShowEditNameModal(false);
     } catch (err: unknown) {
-      console.error('Error updating contact name:', err);
+      reportError(err, { component: 'useMessagingActions', action: 'updateContactName' });
       toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Не удалось сохранить имя');
     } finally { s.setSavingDisplayName(false); }
   }, [s.selectedChat, s.editDisplayNameValue, toast]);
