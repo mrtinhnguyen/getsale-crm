@@ -28,6 +28,6 @@ export {
   type ServiceMetrics,
 } from './service-app';
 
-export { parseLimit } from './query-utils';
+export { parseLimit, parseOffset } from './query-utils';
 
 export { withOrgContext } from './rls';

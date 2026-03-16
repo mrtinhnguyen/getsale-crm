@@ -23,7 +23,7 @@ describe('Auth Router', () => {
     rabbitmq = createMockRabbitMQ();
     redis = { incr: vi.fn().mockResolvedValue(1) };
     const log = createLogger('auth-service-test');
-    const router = authRouter({ pool, rabbitmq, log, redis: redis as unknown as RedisClient, pipelineClient: null });
+    const router = authRouter({ pool, rabbitmq, log, redis: redis as unknown as RedisClient });
     app = createTestApp(router, { prefix: '/api/auth', log, cookieParser: true });
   });
 
@@ -35,7 +35,9 @@ describe('Auth Router', () => {
         .send({});
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/email|password|required/i);
+      expect(res.body.error).toMatch(/validation failed/i);
+      const detailsStr = JSON.stringify(res.body.details ?? []);
+      expect(detailsStr).toMatch(/email|password|required/i);
     });
 
     it('returns 400 when email is invalid', async () => {
@@ -45,7 +47,9 @@ describe('Auth Router', () => {
         .send({ email: 'not-an-email', password: 'password123' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/invalid|email/i);
+      expect(res.body.error).toMatch(/validation failed/i);
+      const detailsStr = JSON.stringify(res.body.details ?? []);
+      expect(detailsStr).toMatch(/invalid|email/i);
     });
 
     it('returns 400 when password is too short', async () => {
@@ -55,7 +59,9 @@ describe('Auth Router', () => {
         .send({ email: 'user@example.com', password: 'short' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/password|8|character/i);
+      expect(res.body.error).toMatch(/validation failed/i);
+      const detailsStr = JSON.stringify(res.body.details ?? []);
+      expect(detailsStr).toMatch(/password|8|character/i);
     });
 
     it('returns 200 and sets auth cookies on successful signup', async () => {
@@ -96,7 +102,9 @@ describe('Auth Router', () => {
         .send({ password: 'password123' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/email|password|required/i);
+      expect(res.body.error).toMatch(/validation failed/i);
+      const detailsStr = JSON.stringify(res.body.details ?? []);
+      expect(detailsStr).toMatch(/email|password|required/i);
     });
 
     it('returns 200 and sets auth cookies on successful signin', async () => {

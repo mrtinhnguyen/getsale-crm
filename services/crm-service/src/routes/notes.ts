@@ -1,8 +1,13 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
-import { ensureEntityAccess } from '../helpers';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
+import { z } from 'zod';
+import { ensureEntityAccess, getNotesForEntity, insertNote } from '../helpers';
+
+const NoteCreateSchema = z.object({
+  content: z.string().min(1).max(50_000).trim(),
+});
 
 interface Deps {
   pool: Pool;
@@ -16,63 +21,50 @@ export function notesRouter({ pool }: Deps): Router {
     const { organizationId } = req.user;
     const { contactId } = req.params;
     await ensureEntityAccess(pool, organizationId, 'contact', contactId);
-    const result = await pool.query(
-      `SELECT id, entity_type, entity_id, content, user_id, created_at, updated_at
-       FROM notes WHERE organization_id = $1 AND entity_type = 'contact' AND entity_id = $2
-       ORDER BY created_at DESC`,
-      [organizationId, contactId]
-    );
-    res.json(result.rows);
+    const rows = await getNotesForEntity(pool, organizationId, 'contact', contactId);
+    res.json(rows);
   }));
 
-  router.post('/contacts/:contactId/notes', asyncHandler(async (req, res) => {
+  router.post('/contacts/:contactId/notes', validate(NoteCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { contactId } = req.params;
-    const content = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
-    if (!content) throw new AppError(400, 'content is required', ErrorCodes.VALIDATION);
+    const { content } = req.body;
     await ensureEntityAccess(pool, organizationId, 'contact', contactId);
-    const result = await pool.query(
-      `INSERT INTO notes (organization_id, entity_type, entity_id, content, user_id)
-       VALUES ($1, 'contact', $2, $3, $4) RETURNING *`,
-      [organizationId, contactId, content, userId || null]
+    const row = await withOrgContext(pool, organizationId, (client) =>
+      insertNote(client, organizationId, 'contact', contactId, content, userId || null)
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   router.get('/deals/:dealId/notes', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { dealId } = req.params;
     await ensureEntityAccess(pool, organizationId, 'deal', dealId);
-    const result = await pool.query(
-      `SELECT id, entity_type, entity_id, content, user_id, created_at, updated_at
-       FROM notes WHERE organization_id = $1 AND entity_type = 'deal' AND entity_id = $2
-       ORDER BY created_at DESC`,
-      [organizationId, dealId]
-    );
-    res.json(result.rows);
+    const rows = await getNotesForEntity(pool, organizationId, 'deal', dealId);
+    res.json(rows);
   }));
 
-  router.post('/deals/:dealId/notes', asyncHandler(async (req, res) => {
+  router.post('/deals/:dealId/notes', validate(NoteCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { dealId } = req.params;
-    const content = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
-    if (!content) throw new AppError(400, 'content is required', ErrorCodes.VALIDATION);
+    const { content } = req.body;
     await ensureEntityAccess(pool, organizationId, 'deal', dealId);
-    const result = await pool.query(
-      `INSERT INTO notes (organization_id, entity_type, entity_id, content, user_id)
-       VALUES ($1, 'deal', $2, $3, $4) RETURNING *`,
-      [organizationId, dealId, content, userId || null]
+    const row = await withOrgContext(pool, organizationId, (client) =>
+      insertNote(client, organizationId, 'deal', dealId, content, userId || null)
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   router.delete('/notes/:id', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    const result = await pool.query(
-      'DELETE FROM notes WHERE id = $1 AND organization_id = $2 RETURNING id',
-      [req.params.id, organizationId]
-    );
-    if (result.rows.length === 0) throw new AppError(404, 'Note not found', ErrorCodes.NOT_FOUND);
+    const deleted = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        'DELETE FROM notes WHERE id = $1 AND organization_id = $2 RETURNING id',
+        [req.params.id, organizationId]
+      );
+      return result.rowCount ?? 0;
+    });
+    if (deleted === 0) throw new AppError(404, 'Note not found', ErrorCodes.NOT_FOUND);
     res.status(204).send();
   }));
 

@@ -139,6 +139,8 @@ describe('Deals Router', () => {
         .mockResolvedValueOnce({ rows: [{ 1: 1 }], rowCount: 1 }) // company check
         .mockResolvedValueOnce({ rows: [{ 1: 1 }], rowCount: 1 }) // pipeline check
         .mockResolvedValueOnce({ rows: [{ id: STAGE_ID }], rowCount: 1 }) // getFirstStageId
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: set_config
         .mockResolvedValueOnce({ rows: [created], rowCount: 1 }); // INSERT deal
 
       const res = await request(app)
@@ -284,6 +286,8 @@ describe('Deals Router', () => {
         .mockResolvedValueOnce({ rows: [{ 1: 1 }], rowCount: 1 }) // pipeline check
         .mockResolvedValueOnce({ rows: [{ id: STAGE_ID }], rowCount: 1 }) // getFirstStageId
         .mockResolvedValueOnce({ rows: [{ 1: 1 }], rowCount: 1 }) // contact check
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: set_config
         .mockResolvedValueOnce({ rows: [created], rowCount: 1 }); // INSERT
 
       const res = await request(app)
@@ -317,9 +321,13 @@ describe('Deals Router', () => {
         comments: null,
       };
       const updated = { ...existing, title: 'Updated Title', updated_at: new Date().toISOString() };
+      // PUT uses withOrgContext: BEGIN, set_config, SELECT existing, UPDATE, then COMMIT
       pool.query
-        .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [updated], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // withOrgContext: set_config
+        .mockResolvedValueOnce({ rows: [existing], rowCount: 1 }) // SELECT deal
+        .mockResolvedValueOnce({ rows: [updated], rowCount: 1 }) // UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // COMMIT
 
       const res = await request(app)
         .put(`/api/crm/deals/${dealId}`)
@@ -332,7 +340,10 @@ describe('Deals Router', () => {
     });
 
     it('returns 404 when deal not found', async () => {
-      pool.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      pool.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // set_config
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT deal
 
       const res = await request(app)
         .put('/api/crm/deals/99999999-9999-9999-9999-999999999999')

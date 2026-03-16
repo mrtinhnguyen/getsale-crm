@@ -14,6 +14,7 @@ import { LeadCardPreview } from '@/components/pipeline/LeadCardPreview';
 import { LeadAvatar } from '@/components/pipeline/LeadAvatar';
 import { apiClient } from '@/lib/api/client';
 import { safeSetItem } from '@/lib/safe-storage';
+import { reportError, reportWarning } from '@/lib/error-reporter';
 import { formatDealAmount } from '@/lib/format/currency';
 
 function leadContactName(lead: Lead): string {
@@ -83,7 +84,7 @@ export default function PipelinePage() {
         setSelectedPipelineId(defaultPipe.id);
       }
     } catch (e) {
-      console.error('Failed to load pipelines', e);
+      reportError(e, { component: 'PipelinePage', action: 'loadPipelines' });
       setPipelines([]);
     }
   }, [selectedPipelineId]);
@@ -103,7 +104,7 @@ export default function PipelinePage() {
       setStages(stagesList.sort((a, b) => a.order_index - b.order_index));
       setLeads(leadsRes.items);
     } catch (e) {
-      console.error('Failed to load stages/leads', e);
+      reportError(e, { component: 'PipelinePage', action: 'loadStagesLeads' });
       setStages([]);
       setLeads([]);
     } finally {
@@ -273,7 +274,7 @@ export default function PipelinePage() {
         prev.map((l) => (l.id === leadId ? { ...l, stage_id: toStageId } : l))
       );
     } catch (e) {
-      console.error('Failed to move lead', e);
+      reportError(e, { component: 'PipelinePage', action: 'moveLead' });
     } finally {
       setMovingLeadId(null);
     }
@@ -285,7 +286,7 @@ export default function PipelinePage() {
       await removeLead(leadId);
       setLeads((prev) => prev.filter((l) => l.id !== leadId));
     } catch (e) {
-      console.error('Failed to remove lead from pipeline', e);
+      reportError(e, { component: 'PipelinePage', action: 'removeLead' });
     }
   }, []);
 
@@ -747,7 +748,7 @@ export default function PipelinePage() {
                       const { id } = JSON.parse(raw);
                       if (id) handleDrop(id, stage.id);
                     } catch (e) {
-                      console.warn('[pipeline] drop parse/handle failed', e);
+                      reportWarning('[pipeline] drop parse/handle failed', { component: 'PipelinePage', error: e });
                     }
                   }
                 }}

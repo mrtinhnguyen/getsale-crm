@@ -12,3 +12,13 @@ export function parseLimit(
   if (!Number.isFinite(n) || n < 1) return defaultVal;
   return Math.min(n, max);
 }
+
+/**
+ * Parse offset from query string with default and min 0.
+ */
+export function parseOffset(query: Record<string, unknown>, defaultVal: number = 0): number {
+  const raw = query.offset;
+  const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
+  if (!Number.isFinite(n) || n < 0) return defaultVal;
+  return n;
+}

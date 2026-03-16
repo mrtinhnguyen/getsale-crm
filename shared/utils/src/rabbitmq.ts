@@ -9,6 +9,14 @@ const dlqCounter = new Counter({
   labelNames: ['queue'] as const,
 });
 
+/** Counter for event publish failures. Register with service registry for /metrics: registry.registerMetric(eventPublishFailedTotal). */
+export const eventPublishFailedTotal = new Counter({
+  name: 'event_publish_failed_total',
+  help: 'Total event publish failures (channel down, write error)',
+  labelNames: [] as const,
+  registers: [], // do not add to default registry; service should register for /metrics
+});
+
 type Connection = Awaited<ReturnType<typeof amqp.connect>>;
 type Channel = Awaited<ReturnType<Connection['createChannel']>>;
 
@@ -66,23 +74,30 @@ export class RabbitMQClient {
 
   async publishEvent(event: Event, exchange: string = 'events'): Promise<void> {
     if (!this.publishChannel) {
+      eventPublishFailedTotal.inc();
       this.log.warn({ message: 'RabbitMQ publish channel not initialized, event not published', event_type: event.type });
       return;
     }
 
-    await this.publishChannel.assertExchange(exchange, 'topic', { durable: true });
+    try {
+      await this.publishChannel.assertExchange(exchange, 'topic', { durable: true });
 
-    const routingKey = event.type;
-    const message = JSON.stringify({
-      ...event,
-      timestamp: event.timestamp.toISOString(),
-    });
+      const routingKey = event.type;
+      const message = JSON.stringify({
+        ...event,
+        timestamp: event.timestamp.toISOString(),
+      });
 
-    this.publishChannel.publish(exchange, routingKey, Buffer.from(message), {
-      persistent: true,
-      messageId: event.id,
-      timestamp: Date.now(),
-    });
+      this.publishChannel.publish(exchange, routingKey, Buffer.from(message), {
+        persistent: true,
+        messageId: event.id,
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      eventPublishFailedTotal.inc();
+      this.log.error({ message: 'Event publish failed', event_type: event.type, error: String(err) });
+      throw err;
+    }
   }
 
   /** Publish event to a DLQ (durable queue). Uses default exchange; queue must exist. */

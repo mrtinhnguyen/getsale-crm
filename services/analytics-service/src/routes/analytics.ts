@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, requireUser } from '@getsale/service-core';
+import { z } from 'zod';
+import { asyncHandler, requireUser, validate } from '@getsale/service-core';
 
 interface Deps {
   pool: Pool;
@@ -9,6 +10,10 @@ interface Deps {
 }
 
 export type PeriodKey = 'today' | 'week' | 'month' | 'year';
+
+const PeriodQuerySchema = z.object({
+  period: z.enum(['today', 'week', 'month', 'year']).default('month'),
+});
 
 /** Compute start and end (ISO strings) for a period. End is now; start is beginning of period. */
 export function getPeriodBounds(period: PeriodKey): { startDate: string; endDate: string } {
@@ -53,10 +58,10 @@ export function analyticsRouter({ pool, log }: Deps): Router {
 
   router.use(requireUser());
 
-  // Summary for cards (leads-based: total value, revenue in period, leads closed in period, participants, leads created)
-  router.get('/summary', asyncHandler(async (req, res) => {
+  // Summary for cards (Q18: period validated via Zod)
+  router.get('/summary', validate(PeriodQuerySchema, 'query'), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    const period = (req.query.period as PeriodKey) || 'month';
+    const { period } = req.query as z.infer<typeof PeriodQuerySchema>;
     const { startDate, endDate } = getPeriodBounds(period);
 
     // Match default pipeline stage names: "Closed Won", "Closed Lost" (see auth-service signup, pipeline-service defaults)

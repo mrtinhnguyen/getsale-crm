@@ -1,5 +1,6 @@
 // @ts-nocheck — GramJS types are incomplete
 import { Api } from 'telegram';
+import { getErrorMessage } from '../helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 import type { Pool } from 'pg';
 
@@ -41,8 +42,8 @@ export class MessageSender {
       );
 
       return message;
-    } catch (error: any) {
-      this.log.error({ message: `Error sending message`, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.error({ message: `Error sending message`, error: getErrorMessage(error) });
       throw error;
     }
   }
@@ -57,8 +58,8 @@ export class MessageSender {
       await clientInfo.client.invoke(
         new Api.messages.SetTyping({ peer, action: new Api.SendMessageTypingAction() })
       );
-    } catch (error: any) {
-      this.log.warn({ message: 'setTyping failed', accountId, chatId, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.warn({ message: 'setTyping failed', accountId, chatId, error: getErrorMessage(error) });
     }
   }
 
@@ -78,8 +79,8 @@ export class MessageSender {
           new Api.messages.ReadHistory({ peer: entity, maxId: 0 })
         );
       }
-    } catch (error: any) {
-      this.log.warn({ message: 'markAsRead failed', accountId, chatId, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.warn({ message: 'markAsRead failed', accountId, chatId, error: getErrorMessage(error) });
     }
   }
 

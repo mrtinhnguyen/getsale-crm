@@ -1,9 +1,14 @@
 import { Router } from 'express';
 import OpenAI from 'openai';
+import { z } from 'zod';
 import { RedisClient, RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { AIRateLimiter } from '../rate-limiter';
+
+const GenerateSearchQueriesSchema = z.object({
+  topic: z.string().min(1).max(500).trim(),
+});
 
 const SEARCH_QUERIES_SYSTEM = `You are a helper that generates short Telegram search queries. Given a topic or niche (e.g. "crypto", "B2B marketing"), output 10-15 search phrases that people would use to find relevant Telegram groups and channels. One phrase per line. No numbering, no bullets. Only the phrases, in English or the same language as the topic. Keep each phrase under 5 words.`;
 
@@ -19,14 +24,11 @@ interface Deps {
 export function searchQueriesRouter({ openai, log, rateLimiter, models }: Deps): Router {
   const router = Router();
 
-  router.post('/generate-search-queries', asyncHandler(async (req, res) => {
+  router.post('/generate-search-queries', validate(GenerateSearchQueriesSchema), asyncHandler(async (req, res) => {
     if (!openai) throw new AppError(503, 'AI service not configured', ErrorCodes.SERVICE_UNAVAILABLE);
 
     const { organizationId } = req.user;
-    const topic = typeof req.body?.topic === 'string' ? req.body.topic.trim() : '';
-    if (!topic || topic.length > 500) {
-      throw new AppError(400, 'topic is required and must be 1-500 characters', ErrorCodes.VALIDATION);
-    }
+    const { topic } = req.body;
 
     const rateCheck = await rateLimiter.check(organizationId);
     if (!rateCheck.allowed) {

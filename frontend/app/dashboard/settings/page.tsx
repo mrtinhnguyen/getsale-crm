@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { clsx } from 'clsx';
+import { reportError } from '@/lib/error-reporter';
 
 type SettingsTab = 'profile' | 'workspace' | 'subscription' | 'security' | 'notifications' | 'audit';
 
@@ -106,7 +107,7 @@ export default function SettingsPage() {
       setProfile(profileRes.data);
       setSubscription(subscriptionRes.data);
     } catch (error) {
-      console.error('Error fetching settings:', error);
+      reportError(error, { component: 'SettingsPage', action: 'fetchSettings' });
     } finally {
       setLoading(false);
     }

@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
 import { AlertTriangle, RotateCcw, LayoutDashboard } from 'lucide-react';
+import { reportError } from '@/lib/error-reporter';
 
 export default function DashboardError({
   error,
@@ -15,7 +16,7 @@ export default function DashboardError({
   const { t } = useTranslation();
 
   useEffect(() => {
-    console.error('[DashboardError]', error);
+    reportError(error, { component: 'DashboardError' });
   }, [error]);
 
   return (

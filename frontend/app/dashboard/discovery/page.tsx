@@ -6,6 +6,7 @@ import {
   Loader2, Play, Pause, Square, Plus, Search, Sparkles, CheckSquare, Settings
 } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
+import { reportWarning } from '@/lib/error-reporter';
 import {
   fetchDiscoveryTasks,
   fetchDiscoveryTask,
@@ -163,10 +164,14 @@ export default function ContactDiscoveryPage() {
             setTasks(r.tasks);
             setTaskTotal(r.total);
           })
-          .catch(() => {});
+          .catch((err) => {
+            reportWarning('Discovery tasks poll failed', { component: 'DiscoveryPage', error: err });
+          });
       }
       if (selectedTask) {
-        fetchDiscoveryTask(selectedTask.id).then((r) => setSelectedTask(r)).catch(() => {});
+        fetchDiscoveryTask(selectedTask.id).then((r) => setSelectedTask(r)).catch((err) => {
+          reportWarning('Discovery task refresh failed', { component: 'DiscoveryPage', error: err });
+        });
       }
     }, 5000);
     return () => clearInterval(interval);
@@ -326,7 +331,7 @@ export default function ContactDiscoveryPage() {
         setParseResult(result);
         setParseStep(4);
       } catch (e) {
-        console.warn('[discovery] fetchParseResult failed', e);
+        reportWarning('[discovery] fetchParseResult failed', { component: 'DiscoveryPage', error: e });
       }
     }
   };

@@ -28,34 +28,36 @@ export interface JwtPayload {
   role?: string;
 }
 
+const JWT_ALGORITHM = 'HS256' as const;
+
 export function signAccessToken(payload: { userId: string; organizationId: string; role: string }): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN, algorithm: JWT_ALGORITHM });
 }
 
 /** Short-lived token for WebSocket handshake (same secret as access, 5 min). Accepted by /api/auth/verify. */
 export function signWsToken(payload: { userId: string; organizationId: string; role: string }): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '5m' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '5m', algorithm: JWT_ALGORITHM });
 }
 
 export function signRefreshToken(userId: string): string {
-  return jwt.sign({ userId }, JWT_REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN });
+  return jwt.sign({ userId }, JWT_REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN, algorithm: JWT_ALGORITHM });
 }
 
 export function verifyAccessToken(token: string): JwtPayload {
-  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+  return jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] }) as JwtPayload;
 }
 
 export function verifyRefreshToken(token: string): { userId: string } {
-  return jwt.verify(token, JWT_REFRESH_SECRET) as { userId: string };
+  return jwt.verify(token, JWT_REFRESH_SECRET, { algorithms: [JWT_ALGORITHM] }) as { userId: string };
 }
 
 /** Short-lived JWT for 2FA login flow — contains userId + purpose='mfa', 5 min expiry. */
 export function signTempToken(userId: string): string {
-  return jwt.sign({ userId, purpose: 'mfa' }, JWT_SECRET, { expiresIn: '5m' });
+  return jwt.sign({ userId, purpose: 'mfa' }, JWT_SECRET, { expiresIn: '5m', algorithm: JWT_ALGORITHM });
 }
 
 export function verifyTempToken(token: string): { userId: string } {
-  const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; purpose?: string };
+  const decoded = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] }) as { userId: string; purpose?: string };
   if (decoded.purpose !== 'mfa') {
     throw new AppError(401, 'Invalid token', ErrorCodes.UNAUTHORIZED);
   }

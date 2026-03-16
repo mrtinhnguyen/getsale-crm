@@ -29,6 +29,7 @@ build/
 .cursor/workspace/completed/
 .cursor/workspace/failed/
 .cursor/mcp.json
+.cursorignore
 
 # OS
 .DS_Store

@@ -1,11 +1,57 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
+import { z } from 'zod';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { TelegramManager } from '../telegram';
 import { serializeMessage } from '../telegram-serialize';
 import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, getAccountOr404, requireBidiCanWriteAccount } from '../helpers';
+
+const SendMessageSchema = z.object({
+  chatId: z.string().min(1).max(256),
+  text: z.string().optional(),
+  fileBase64: z.string().optional(),
+  fileName: z.string().max(512).optional(),
+  replyToMessageId: z.union([z.string(), z.number()]).optional(),
+}).refine((d) => (d.text != null && d.text !== '') || (d.fileBase64 != null && d.fileBase64 !== ''), { message: 'text or fileBase64 is required' });
+
+const SendBulkSchema = z.object({
+  channelIds: z.array(z.string().min(1).max(256)).min(1).max(100),
+  text: z.string().min(1).max(100_000),
+});
+
+const ForwardMessageSchema = z.object({
+  fromChatId: z.string().min(1).max(256),
+  toChatId: z.string().min(1).max(256),
+  telegramMessageId: z.coerce.number().int().positive(),
+});
+
+const DraftSchema = z.object({
+  channelId: z.string().min(1).max(256),
+  text: z.string().max(100_000).optional(),
+  replyToMsgId: z.union([z.string(), z.number()]).optional(),
+});
+
+const DeleteMessageSchema = z.object({
+  channelId: z.string().min(1).max(256),
+  telegramMessageId: z.coerce.number().int().nonnegative(),
+});
+
+const CreateSharedChatSchema = z.object({
+  title: z.string().min(1).max(255).trim(),
+  lead_telegram_user_id: z.coerce.number().int().positive().optional().nullable(),
+  extra_usernames: z.array(z.string().max(128).trim()).optional(),
+});
+
+const ReactionBodySchema = z.object({
+  chatId: z.string().min(1).max(256),
+  reaction: z.array(z.string().max(64)).optional(),
+});
+
+const ChatIdBodySchema = z.object({
+  chatId: z.string().min(1).max(256),
+});
 
 interface Deps {
   pool: Pool;
@@ -18,17 +64,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   const router = Router();
 
   // POST /:id/send — send message or file via Telegram
-  router.post('/:id/send', asyncHandler(async (req, res) => {
+  router.post('/:id/send', validate(SendMessageSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { chatId, text, fileBase64, fileName, replyToMessageId } = req.body;
-
-    if (!chatId) {
-      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
-    }
-    if (!text && !fileBase64) {
-      throw new AppError(400, 'Missing required field: text or fileBase64', ErrorCodes.VALIDATION);
-    }
 
     const account = await getAccountOr404<{ id: string; is_demo?: boolean }>(pool, id, organizationId, 'id, is_demo');
     if (account.is_demo) {
@@ -67,17 +106,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/send-bulk — send one message to multiple chats
-  router.post('/:id/send-bulk', asyncHandler(async (req, res) => {
+  router.post('/:id/send-bulk', validate(SendBulkSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { channelIds, text } = req.body;
-
-    if (!Array.isArray(channelIds) || channelIds.length === 0) {
-      throw new AppError(400, 'Missing or invalid channelIds array (at least one chat required)', ErrorCodes.VALIDATION);
-    }
-    if (!text || typeof text !== 'string') {
-      throw new AppError(400, 'Missing required field: text', ErrorCodes.VALIDATION);
-    }
 
     const account = await getAccountOr404<{ id: string; is_demo?: boolean }>(pool, id, organizationId, 'id, is_demo');
     if (account.is_demo) {
@@ -107,14 +139,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/forward — forward message to another chat
-  router.post('/:id/forward', asyncHandler(async (req, res) => {
+  router.post('/:id/forward', validate(ForwardMessageSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { fromChatId, toChatId, telegramMessageId } = req.body;
-
-    if (!fromChatId || !toChatId || telegramMessageId == null) {
-      throw new AppError(400, 'Missing required fields: fromChatId, toChatId, telegramMessageId', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
@@ -122,12 +150,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(400, 'BD account is not connected', ErrorCodes.BAD_REQUEST);
     }
 
-    const message = await telegramManager.forwardMessage(
-      id,
-      String(fromChatId),
-      String(toChatId),
-      Number(telegramMessageId)
-    );
+    const message = await telegramManager.forwardMessage(id, fromChatId, toChatId, telegramMessageId);
 
     res.json({
       success: true,
@@ -137,14 +160,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/draft — save draft in Telegram
-  router.post('/:id/draft', asyncHandler(async (req, res) => {
+  router.post('/:id/draft', validate(DraftSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { channelId, text, replyToMsgId } = req.body;
-
-    if (!channelId) {
-      throw new AppError(400, 'Missing required field: channelId', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
@@ -160,21 +179,17 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(403, 'Chat is not in sync list for this account', ErrorCodes.FORBIDDEN);
     }
 
-    await telegramManager.saveDraft(id, String(channelId), typeof text === 'string' ? text : '', {
+    await telegramManager.saveDraft(id, channelId, text ?? '', {
       replyToMsgId: replyToMsgId != null && String(replyToMsgId).trim() ? Number(replyToMsgId) : undefined,
     });
     res.json({ success: true });
   }));
 
   // POST /:id/delete-message — delete message in Telegram
-  router.post('/:id/delete-message', asyncHandler(async (req, res) => {
+  router.post('/:id/delete-message', validate(DeleteMessageSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { channelId, telegramMessageId } = req.body;
-
-    if (!channelId || telegramMessageId == null) {
-      throw new AppError(400, 'Missing required fields: channelId, telegramMessageId', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, id, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, id, req.user);
@@ -187,14 +202,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/create-shared-chat — create Telegram supergroup and invite users
-  router.post('/:id/create-shared-chat', asyncHandler(async (req, res) => {
+  router.post('/:id/create-shared-chat', validate(CreateSharedChatSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id: accountId } = req.params;
-    const { title, lead_telegram_user_id: leadTelegramUserId, extra_usernames: extraUsernamesRaw } = req.body ?? {};
-
-    if (!title || typeof title !== 'string' || !title.trim()) {
-      throw new AppError(400, 'Missing required field: title', ErrorCodes.VALIDATION);
-    }
+    const { title, lead_telegram_user_id: leadTelegramUserId, extra_usernames: extraUsernamesRaw } = req.body;
 
     await getAccountOr404(pool, accountId, organizationId, 'id');
     if (!telegramManager.isConnected(accountId)) {
@@ -202,9 +213,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
     }
 
     const leadId = leadTelegramUserId != null ? Number(leadTelegramUserId) : undefined;
-    const extraUsernames = Array.isArray(extraUsernamesRaw)
-      ? extraUsernamesRaw.filter((u: unknown) => typeof u === 'string').map((u: string) => u.trim())
-      : [];
+    const extraUsernames = extraUsernamesRaw ?? [];
 
     const result = await telegramManager.createSharedChat(accountId, {
       title: title.trim().slice(0, 255),
@@ -212,21 +221,27 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       extraUsernames,
     });
 
+    // Добавить созданный общий чат в bd_account_sync_chats, чтобы он сразу появлялся в списке чатов аккаунта.
+    const chatIdStr = String(result.channelId ?? '').trim();
+    if (chatIdStr) {
+      await pool.query(
+        `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
+         VALUES ($1, $2, $3, 'chat', false, NULL)
+         ON CONFLICT (bd_account_id, telegram_chat_id) DO UPDATE SET title = EXCLUDED.title`,
+        [accountId, chatIdStr, (result.title ?? title.trim()).slice(0, 500)]
+      );
+    }
+
     res.json({ channelId: result.channelId, title: result.title, inviteLink: result.inviteLink ?? null });
   }));
 
   // POST /:id/messages/:telegramMessageId/reaction — set reactions on a message
-  router.post('/:id/messages/:telegramMessageId/reaction', asyncHandler(async (req, res) => {
+  router.post('/:id/messages/:telegramMessageId/reaction', validate(ReactionBodySchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id: accountId, telegramMessageId } = req.params;
     const { chatId, reaction: reactionBody } = req.body;
 
-    if (!chatId) {
-      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
-    }
-    const reactionList = Array.isArray(reactionBody)
-      ? reactionBody.map((e) => String(e)).filter(Boolean)
-      : [];
+    const reactionList = (reactionBody ?? []).map((e: string) => String(e)).filter(Boolean);
 
     await getAccountOr404(pool, accountId, organizationId, 'id');
     await requireBidiCanWriteAccount(pool, accountId, req.user);
@@ -257,14 +272,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/typing — send typing indicator
-  router.post('/:id/typing', asyncHandler(async (req, res) => {
+  router.post('/:id/typing', validate(ChatIdBodySchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { chatId } = req.body;
-
-    if (!chatId) {
-      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, id, organizationId, 'id');
     if (!telegramManager.isConnected(id)) {
@@ -276,14 +287,10 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/read — mark messages as read
-  router.post('/:id/read', asyncHandler(async (req, res) => {
+  router.post('/:id/read', validate(ChatIdBodySchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { chatId } = req.body;
-
-    if (!chatId) {
-      throw new AppError(400, 'Missing required field: chatId', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, id, organizationId, 'id');
     if (!telegramManager.isConnected(id)) {

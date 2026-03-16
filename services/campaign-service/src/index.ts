@@ -23,13 +23,13 @@ async function main() {
   const messagingClient = new ServiceHttpClient({
     baseUrl: process.env.MESSAGING_SERVICE_URL || 'http://localhost:3003',
     name: 'messaging-service',
-    retries: 0,
+    retries: 2,
   }, log);
 
   const bdAccountsClient = new ServiceHttpClient({
     baseUrl: process.env.BD_ACCOUNTS_SERVICE_URL || 'http://localhost:3007',
     name: 'bd-accounts-service',
-    retries: 0,
+    retries: 2,
   }, log);
 
   try {

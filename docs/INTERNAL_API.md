@@ -2,6 +2,24 @@
 
 Документ описывает HTTP-вызовы между микросервисами (ServiceHttpClient). Все вызовы требуют заголовка `X-Internal-Auth` (INTERNAL_AUTH_SECRET). Для вызовов от имени пользователя бэкенды ожидают заголовки `X-User-Id`, `X-Organization-Id`, опционально `X-User-Role`, `x-correlation-id` (gateway передаёт их при проксировании; при service-to-service контекст нужно передавать явно).
 
+**Важно:** Бэкенды не должны быть доступны из интернета. Доступ только через API Gateway или из внутренней сети. См. [DEPLOYMENT.md](DEPLOYMENT.md) — раздел «Безопасность: gateway и бэкенды».
+
+---
+
+## Internal-only endpoints (service-to-service)
+
+Эндпоинты ниже не проксируются через API Gateway; вызовы только между сервисами с заголовком `X-Internal-Auth` (INTERNAL_AUTH_SECRET). Контекст организации передаётся в `X-Organization-Id`.
+
+| Сервис | Метод | Путь | Описание |
+|--------|-------|------|----------|
+| **pipeline-service** | POST | `/internal/pipeline/default-for-org` | Создание дефолтного пайплайна для организации. Body не используется; organizationId только из заголовка `X-Organization-Id`. |
+| **messaging-service** | POST | `/internal/conversations/ensure` | Создание/обновление conversation. Body: organizationId, bdAccountId, channel, channelId и др. |
+| **messaging-service** | POST | `/internal/messages` | Создание/upsert сообщения (по bd_account_id, channel_id, telegram_message_id). |
+| **messaging-service** | PATCH | `/internal/messages/edit-by-telegram` | Редактирование сообщения по (bdAccountId, channelId, telegramMessageId, content, …). Заголовок `X-Organization-Id` обязателен (S4). |
+| **messaging-service** | POST | `/internal/messages/delete-by-telegram` | Удаление сообщений по (bdAccountId, channelId?, telegramMessageIds[]). Заголовок `X-Organization-Id` обязателен (S4). |
+| **messaging-service** | POST | `/internal/messages/orphan-by-bd-account` | S2/A1: обнуление `bd_account_id` у сообщений при удалении аккаунта. Body: `{ bdAccountId }`. Заголовок `X-Organization-Id` обязателен. Вызывается bd-accounts перед удалением аккаунта. |
+| **bd-accounts-service** | GET | `/internal/sync-chats?bdAccountId=...` | Список чатов синхронизации для аккаунта. Заголовок `X-Organization-Id` обязателен. Возврат: `{ chats: [{ telegram_chat_id, title, peer_type, history_exhausted, folder_id, folder_ids }] }`. |
+
 ---
 
 ## 1. Auth Service → Pipeline Service

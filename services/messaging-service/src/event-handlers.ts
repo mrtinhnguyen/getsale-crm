@@ -17,9 +17,10 @@ export async function subscribeToEvents(deps: EventHandlerDeps): Promise<void> {
     async (event: any) => {
       if (event.type !== EventType.LEAD_CREATED_FROM_CAMPAIGN) return;
       const { conversationId, leadId, campaignId } = event.data || {};
-      if (!conversationId || !leadId || !campaignId) return;
+      const organizationId = event.organizationId;
+      if (!conversationId || !leadId || !campaignId || !organizationId) return;
       try {
-        const updated = await attachLead(pool, { conversationId, leadId, campaignId });
+        const updated = await attachLead(pool, { conversationId, leadId, campaignId, organizationId });
         if (updated === 0) log.info({ message: 'attachLead no-op (already attached)', conversationId, leadId });
       } catch (err) {
         log.error({ message: 'attachLead error', error: String(err) });

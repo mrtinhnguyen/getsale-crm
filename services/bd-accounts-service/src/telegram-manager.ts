@@ -663,7 +663,9 @@ export class TelegramManager {
         }
         try {
           await client.disconnect();
-        } catch (_) {}
+        } catch (e: unknown) {
+          this.log.debug({ message: 'QR client disconnect ignored', error: String(e) });
+        }
       }
     })();
 
@@ -919,7 +921,9 @@ export class TelegramManager {
           },
           new Raw({ func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'Raw update handler registration failed', accountId, error: String(e) });
+      }
 
       // UpdateShortMessage / UpdateShortChatMessage — личные и групповые (входящие и исходящие с другого устройства).
       try {
@@ -950,7 +954,9 @@ export class TelegramManager {
             },
           })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'Short message handler registration failed', accountId, error: String(e) });
+      }
 
       // UpdateNewMessage / UpdateNewChannelMessage — полный объект Message (личные чаты и группы/каналы).
       try {
@@ -1248,11 +1254,15 @@ export class TelegramManager {
                 userId: String(userId),
                 action: action || undefined,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateUserTyping handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateUserTyping], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateUserTyping registration failed', accountId, error: String(e) });
+      }
     }
 
     // UpdateChatUserTyping — группа/канал (chat_id = чат, from_id = кто печатает)
@@ -1283,11 +1293,15 @@ export class TelegramManager {
                 userId,
                 action: action || undefined,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateChatUserTyping handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateChatUserTyping], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateChatUserTyping registration failed', accountId, error: String(e) });
+      }
     }
 
     // UpdateUserStatus — онлайн/офлайн (без привязки к чату)
@@ -1309,11 +1323,15 @@ export class TelegramManager {
                 status: status || undefined,
                 expires: typeof expires === 'number' ? expires : undefined,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateUserStatus handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateUserStatus], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateUserStatus registration failed', accountId, error: String(e) });
+      }
     }
 
     // UpdateReadHistoryInbox — прочитано в личке/группе (peer + max_id)
@@ -1341,11 +1359,15 @@ export class TelegramManager {
                 channelId,
                 maxId,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateReadHistoryInbox handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateReadHistoryInbox], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateReadHistoryInbox registration failed', accountId, error: String(e) });
+      }
     }
 
     // UpdateReadChannelInbox — прочитано в канале/супергруппе
@@ -1368,11 +1390,15 @@ export class TelegramManager {
                 channelId,
                 maxId,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateReadChannelInbox handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateReadChannelInbox], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateReadChannelInbox registration failed', accountId, error: String(e) });
+      }
     }
 
     // UpdateDraftMessage — черновик в чате
@@ -1407,11 +1433,15 @@ export class TelegramManager {
                 draftText: draftText || undefined,
                 replyToMsgId,
               });
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'UpdateDraftMessage handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types: [ApiAny.UpdateDraftMessage], func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'UpdateDraftMessage registration failed', accountId, error: String(e) });
+      }
     }
   }
 
@@ -1445,11 +1475,15 @@ export class TelegramManager {
             try {
               if (!client.connected) return;
               await handler(event);
-            } catch (_) {}
+            } catch (e: unknown) {
+              this.log.debug({ message: 'Telegram other handler error', accountId, error: String(e) });
+            }
           },
           new Raw({ types, func: () => true })
         );
-      } catch (_) {}
+      } catch (e: unknown) {
+        this.log.debug({ message: 'Telegram other handler registration failed', accountId, types: types?.length, error: String(e) });
+      }
     };
 
     // UpdateMessageID — подтверждение отправки (temp id → real id)
@@ -2003,7 +2037,9 @@ export class TelegramManager {
         [organizationId, telegramId, firstName || '', lastName, username, phone, bio, premium]
       );
       if (insert.rows.length > 0) return insert.rows[0].id;
-    } catch (_) {}
+    } catch (e: unknown) {
+      this.log.debug({ message: 'Contact insert failed, will SELECT', organizationId, telegramId, error: String(e) });
+    }
     const again = await this.pool.query(
       'SELECT id FROM contacts WHERE telegram_id = $1 AND organization_id = $2 LIMIT 1',
       [telegramId, organizationId]

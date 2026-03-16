@@ -12,7 +12,7 @@ import {
 } from './config';
 import { corsMiddleware, correlationIdMiddleware } from './cors';
 import { createAuthenticate, requireRole } from './auth';
-import { createRateLimit } from './rate-limit';
+import { createRateLimit, createWebhookRateLimit, createInviteRateLimit } from './rate-limit';
 import { addCorrelationToResponse } from './proxy-helpers';
 import { createProxies } from './proxies';
 
@@ -22,7 +22,17 @@ const redis = new RedisClient(REDIS_URL);
 const app = express();
 
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https:", "wss:"],
+      fontSrc: ["'self'"],
+      frameAncestors: ["'self'"],
+    },
+  },
   crossOriginEmbedderPolicy: false,
 }));
 app.use(corsMiddleware);
@@ -38,14 +48,26 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'api-gateway' });
 });
 
+app.get('/ready', async (req, res) => {
+  addCorrelationToResponse(res, req);
+  try {
+    await redis.ping();
+    res.json({ ready: true, service: 'api-gateway', checks: { redis: 'ok' } });
+  } catch {
+    res.status(503).json({ ready: false, service: 'api-gateway', checks: { redis: 'error' } });
+  }
+});
+
 app.use(cookieParser());
 
 const authenticate = createAuthenticate(log);
 const rateLimit = createRateLimit(redis);
+const webhookRateLimit = createWebhookRateLimit(redis);
+const inviteRateLimit = createInviteRateLimit(redis);
 const proxies = createProxies(log);
 
 app.use('/api/auth', proxies.authProxy);
-app.use('/api/invite', (req, res, next) => {
+app.use('/api/invite', inviteRateLimit, (req, res, next) => {
   if (req.method === 'GET') return proxies.inviteProxy(req, res, next);
   return authenticate(req, res, next);
 }, proxies.inviteProxy);
@@ -53,7 +75,7 @@ app.use('/api/invite', (req, res, next) => {
 app.use('/api/crm', authenticate, rateLimit, proxies.crmProxy);
 app.use('/api/messaging', authenticate, rateLimit, proxies.messagingProxy);
 app.use('/api/ai', authenticate, rateLimit, proxies.aiProxy);
-app.use('/api/users/stripe-webhook', proxies.stripeWebhookProxy);
+app.use('/api/users/stripe-webhook', webhookRateLimit, proxies.stripeWebhookProxy);
 app.use('/api/users', authenticate, rateLimit, proxies.userProxy);
 app.use('/api/bd-accounts', authenticate, rateLimit, proxies.bdAccountsProxy);
 app.use('/api/pipeline', authenticate, rateLimit, proxies.pipelineProxy);

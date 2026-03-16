@@ -20,7 +20,12 @@ interface Deps {
   stripe: Stripe;
 }
 
-type HandlerDeps = Pick<Deps, 'pool' | 'log' | 'rabbitmq'>;
+interface HandlerDeps {
+  pool: Deps['pool'];
+  log: Deps['log'];
+  rabbitmq: Deps['rabbitmq'];
+  correlationId?: string;
+}
 
 export function stripeWebhookRouter({ pool, log, rabbitmq, stripe }: Deps): Router {
   const router = Router();
@@ -59,7 +64,7 @@ export function stripeWebhookRouter({ pool, log, rabbitmq, stripe }: Deps): Rout
       correlation_id: req.correlationId,
     });
 
-    const deps: HandlerDeps = { pool, log, rabbitmq };
+    const deps: HandlerDeps = { pool, log, rabbitmq, correlationId: req.correlationId };
 
     try {
       switch (event.type) {
@@ -98,7 +103,7 @@ function extractSubscriptionId(ref: string | Stripe.Subscription | null | undefi
   return typeof ref === 'string' ? ref : ref.id;
 }
 
-async function handlePaymentSucceeded(invoice: Stripe.Invoice, { pool, log, rabbitmq }: HandlerDeps) {
+async function handlePaymentSucceeded(invoice: Stripe.Invoice, { pool, log, rabbitmq, correlationId }: HandlerDeps) {
   const stripeSubId = extractSubscriptionId(invoice.subscription);
   if (!stripeSubId) return;
 
@@ -130,11 +135,12 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice, { pool, log, rabb
     timestamp: new Date(),
     organizationId: sub.organization_id,
     userId: sub.user_id,
+    correlationId,
     data: { subscriptionId: sub.id, status: 'active', plan: sub.plan, stripeSubscriptionId: stripeSubId },
   });
 }
 
-async function handlePaymentFailed(invoice: Stripe.Invoice, { pool, log, rabbitmq }: HandlerDeps) {
+async function handlePaymentFailed(invoice: Stripe.Invoice, { pool, log, rabbitmq, correlationId }: HandlerDeps) {
   const stripeSubId = extractSubscriptionId(invoice.subscription);
   if (!stripeSubId) return;
 
@@ -160,11 +166,12 @@ async function handlePaymentFailed(invoice: Stripe.Invoice, { pool, log, rabbitm
     timestamp: new Date(),
     organizationId: sub.organization_id,
     userId: sub.user_id,
+    correlationId,
     data: { subscriptionId: sub.id, status: 'past_due', plan: sub.plan, stripeSubscriptionId: stripeSubId },
   });
 }
 
-async function handleSubscriptionUpdated(subscription: Stripe.Subscription, { pool, log, rabbitmq }: HandlerDeps) {
+async function handleSubscriptionUpdated(subscription: Stripe.Subscription, { pool, log, rabbitmq, correlationId }: HandlerDeps) {
   const result = await pool.query(
     `UPDATE subscriptions
      SET status = $1,
@@ -195,11 +202,12 @@ async function handleSubscriptionUpdated(subscription: Stripe.Subscription, { po
     timestamp: new Date(),
     organizationId: sub.organization_id,
     userId: sub.user_id,
+    correlationId,
     data: { subscriptionId: sub.id, status: subscription.status, plan: sub.plan, stripeSubscriptionId: subscription.id },
   });
 }
 
-async function handleSubscriptionDeleted(subscription: Stripe.Subscription, { pool, log, rabbitmq }: HandlerDeps) {
+async function handleSubscriptionDeleted(subscription: Stripe.Subscription, { pool, log, rabbitmq, correlationId }: HandlerDeps) {
   const result = await pool.query(
     `UPDATE subscriptions
      SET status = 'cancelled', updated_at = NOW()
@@ -222,6 +230,7 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription, { po
     timestamp: new Date(),
     organizationId: sub.organization_id,
     userId: sub.user_id,
+    correlationId,
     data: { subscriptionId: sub.id, cancelledAt: new Date() },
   });
 }

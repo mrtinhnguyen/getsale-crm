@@ -1,9 +1,12 @@
 import Redis from 'ioredis';
+import { createLogger, Logger } from '@getsale/logger';
 
 export class RedisClient {
   private client: Redis;
+  private log: Logger;
 
-  constructor(url: string) {
+  constructor(url: string, log?: Logger) {
+    this.log = log ?? createLogger('redis');
     this.client = new Redis(url, {
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
@@ -13,12 +16,17 @@ export class RedisClient {
     });
 
     this.client.on('error', (err) => {
-      console.error('Redis client error:', err);
+      this.log.error({ message: 'Redis client error', error: String(err) });
     });
 
     this.client.on('connect', () => {
-      console.log('Redis client connected');
+      this.log.info({ message: 'Redis client connected' });
     });
+  }
+
+  /** Check connection (for readiness probes). */
+  async ping(): Promise<void> {
+    await this.client.ping();
   }
 
   async get<T>(key: string): Promise<T | null> {

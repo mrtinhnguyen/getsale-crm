@@ -22,7 +22,10 @@ describe('Chats Router', () => {
     vi.clearAllMocks();
     pool = createMockPool();
     const log = createLogger('messaging-service-test');
-    const router = chatsRouter({ pool, log });
+    const bdAccountsClient = {
+      get: vi.fn().mockResolvedValue({ chats: [] }),
+    } as unknown as import('@getsale/service-core').ServiceHttpClient;
+    const router = chatsRouter({ pool, log, bdAccountsClient });
     app = createTestApp(router, { prefix: '/api/messaging', log });
   });
 

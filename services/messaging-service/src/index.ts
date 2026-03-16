@@ -9,6 +9,7 @@ import { conversationLeadsRouter } from './routes/conversation-leads';
 import { conversationAiRouter } from './routes/conversation-ai';
 import { sharedChatsRouter } from './routes/shared-chats';
 import { conversationDealsRouter } from './routes/conversation-deals';
+import { internalMessagingRouter } from './routes/internal';
 
 async function main() {
   const ctx = await createServiceApp({
@@ -20,7 +21,7 @@ async function main() {
   const bdAccountsClient = new ServiceHttpClient({
     baseUrl: process.env.BD_ACCOUNTS_SERVICE_URL || 'http://bd-accounts-service:3007',
     name: 'bd-accounts-service',
-    retries: 0,
+    retries: 2,
   }, log);
 
   const aiClient = new ServiceHttpClient({
@@ -61,12 +62,13 @@ async function main() {
   });
 
   ctx.mount('/api/messaging', messagesRouter({ pool, rabbitmq, log, bdAccountsClient }));
-  ctx.mount('/api/messaging', chatsRouter({ pool, log }));
+  ctx.mount('/api/messaging', chatsRouter({ pool, log, bdAccountsClient }));
   ctx.mount('/api/messaging', conversationsRouter({ pool }));
   ctx.mount('/api/messaging', conversationLeadsRouter({ pool }));
   ctx.mount('/api/messaging', conversationAiRouter({ pool, log, aiClient }));
   ctx.mount('/api/messaging', sharedChatsRouter({ pool, log, bdAccountsClient, conflicts409Total, sharedChatCreatedTotal, externalCallDuration }));
   ctx.mount('/api/messaging', conversationDealsRouter({ pool, log, conflicts409Total, dealsWonTotal }));
+  ctx.mount('/internal', internalMessagingRouter({ pool, log }));
 
   ctx.start();
 }

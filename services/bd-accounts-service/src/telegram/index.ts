@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { ServiceHttpClient } from '@getsale/service-core';
 import { RabbitMQClient, RedisClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
 import { randomUUID } from 'crypto';
@@ -51,7 +52,13 @@ export class TelegramManager {
   private readonly fileHandler: FileHandler;
   private readonly reactionHandler: ReactionHandler;
 
-  constructor(pool: Pool, rabbitmq: RabbitMQClient, redis?: RedisClient | null, logger?: Logger) {
+  constructor(
+    pool: Pool,
+    rabbitmq: RabbitMQClient,
+    redis?: RedisClient | null,
+    logger?: Logger,
+    messagingClient?: ServiceHttpClient | null
+  ) {
     const svcLog: Logger = logger ?? { info() {}, warn() {}, error() {} } as Logger;
     const log = {
       info: (...args: unknown[]) => svcLog.info({ message: formatLogArgs(...args) }),
@@ -73,13 +80,13 @@ export class TelegramManager {
       dialogFiltersCache: new Map<string, { ts: number; filters: unknown[] }>(),
     };
 
-    // Instantiate sub-modules
+    // Instantiate sub-modules (messagingClient => messages/conversations via messaging-service API, A1)
     this.connectionManager = new ConnectionManager(this.deps);
     this.sessionManager = new SessionManager(this.deps);
     this.authHandler = new AuthHandler(this.deps);
     this.qrLogin = new QrLogin(this.deps);
     this.eventHandlerSetup = new EventHandlerSetup(this.deps);
-    this.messageDb = new MessageDb(pool, log);
+    this.messageDb = new MessageDb(pool, log, messagingClient ?? null);
     this.contactManager = new ContactManager(this.deps);
     this.messageHandler = new MessageHandler(this.deps);
     this.messageSync = new MessageSync(this.deps);

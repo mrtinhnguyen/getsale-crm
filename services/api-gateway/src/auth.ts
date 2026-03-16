@@ -27,7 +27,7 @@ export function createAuthenticate(log: Logger) {
 
       let payload: JwtPayload;
       try {
-        payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+        payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
       } catch {
         res.status(401).json({ error: 'Invalid or expired token' });
         return;

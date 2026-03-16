@@ -84,7 +84,7 @@ export interface DealHistory {
   toStageId?: string;
   performedBy: string;
   timestamp: Date;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Pipeline {
@@ -110,7 +110,7 @@ export interface PipelineStage {
 export interface StageRule {
   type: 'field' | 'time' | 'event';
   condition: string;
-  value: any;
+  value: unknown;
 }
 
 export interface AutoTransition {
@@ -130,7 +130,7 @@ export interface Message {
   status: MessageStatus;
   unread: boolean;
   ownerId?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -219,7 +219,7 @@ export interface AIDraft {
   approvedBy?: string;
   rejectedBy?: string;
   rejectionReason?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }

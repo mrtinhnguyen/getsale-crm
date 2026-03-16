@@ -1,13 +1,11 @@
 import cookieParser from 'cookie-parser';
-import { createServiceApp, ServiceHttpClient } from '@getsale/service-core';
+import { createServiceApp } from '@getsale/service-core';
 import { RedisClient } from '@getsale/utils';
 import { authRouter } from './routes/auth';
 import { twoFactorRouter } from './routes/two-factor';
 import { organizationRouter } from './routes/organization';
 import { workspacesRouter } from './routes/workspaces';
 import { invitesRouter } from './routes/invites';
-
-const PIPELINE_SERVICE_URL = process.env.PIPELINE_SERVICE_URL || 'http://localhost:3008';
 
 async function main() {
   const redis = new RedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
@@ -22,11 +20,7 @@ async function main() {
   ctx.app.use(cookieParser());
 
   const { pool, rabbitmq, log } = ctx;
-  const pipelineClient = new ServiceHttpClient(
-    { baseUrl: PIPELINE_SERVICE_URL, name: 'pipeline-service' },
-    log
-  );
-  const deps = { pool, rabbitmq, log, redis, pipelineClient };
+  const deps = { pool, rabbitmq, log, redis };
 
   ctx.mount('/api/auth', authRouter(deps));
   ctx.mount('/api/auth/2fa', twoFactorRouter(deps));

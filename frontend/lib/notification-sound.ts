@@ -1,3 +1,5 @@
+import { reportWarning } from './error-reporter';
+
 const NOTIFICATION_SOUND_PATH = '/notification.wav';
 
 let sharedContext: AudioContext | null = null;
@@ -30,7 +32,9 @@ function playBeepNotification(): void {
   if (!ctx) return;
   if (ctx.state === 'suspended') {
     afterFirstUserGesture(() => {
-      ctx.resume().then(() => playBeepNotification()).catch(() => {});
+      ctx.resume().then(() => playBeepNotification()).catch((err) => {
+      reportWarning('AudioContext resume failed', { error: err, action: 'notification-sound' });
+    });
     });
     return;
   }
@@ -45,7 +49,9 @@ function playBeepNotification(): void {
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.15);
-  } catch (_) {}
+  } catch (e) {
+    reportWarning('Play beep notification failed', { error: e, action: 'notification-sound' });
+  }
 }
 
 /** Воспроизвести звук уведомления: WAV или «динг» (fallback). */
@@ -53,7 +59,8 @@ export function playNotificationSound(): void {
   if (typeof window === 'undefined') return;
   const audio = new Audio(NOTIFICATION_SOUND_PATH);
   audio.volume = 0.6;
-  audio.play().then(() => {}).catch(() => {
+  audio.play().then(() => {}).catch((err) => {
+    reportWarning('Notification WAV play failed, using beep fallback', { error: err, action: 'notification-sound' });
     playBeepNotification();
   });
   audio.addEventListener('error', () => playBeepNotification(), { once: true });

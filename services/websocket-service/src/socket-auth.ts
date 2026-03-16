@@ -52,7 +52,7 @@ export function createSocketAuth(log: Logger) {
 
       let payload: JwtPayload;
       try {
-        payload = jwt.verify(token, secret) as JwtPayload;
+        payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as JwtPayload;
       } catch {
         return next(new Error('Authentication error: Invalid or expired token'));
       }

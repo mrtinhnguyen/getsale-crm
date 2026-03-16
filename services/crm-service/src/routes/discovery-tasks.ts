@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate, parseLimit, parseOffset } from '@getsale/service-core';
 import { DiscoveryTaskCreateSchema, DiscoveryTaskActionSchema } from '../validation';
 import { ServiceHttpClient } from '@getsale/service-core';
 import { randomUUID } from 'crypto';
@@ -18,10 +18,11 @@ interface Deps {
 export function discoveryTasksRouter({ pool, rabbitmq, log, campaignServiceClient }: Deps): Router {
   const router = Router();
 
-  // GET /api/crm/discovery-tasks
+  // GET /api/crm/discovery-tasks (Q17: validated limit/offset)
   router.get('/', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    const { limit = 50, offset = 0 } = req.query;
+    const limit = parseLimit(req.query, 50, 100);
+    const offset = parseOffset(req.query, 0);
 
     const query = `
       SELECT id, name, type, status, progress, total, params, results, created_at, updated_at
@@ -30,7 +31,7 @@ export function discoveryTasksRouter({ pool, rabbitmq, log, campaignServiceClien
       ORDER BY created_at DESC
       LIMIT $2 OFFSET $3
     `;
-    const result = await pool.query(query, [organizationId, Number(limit), Number(offset)]);
+    const result = await pool.query(query, [organizationId, limit, offset]);
     
     const countQuery = `SELECT COUNT(*) FROM contact_discovery_tasks WHERE organization_id = $1`;
     const countResult = await pool.query(countQuery, [organizationId]);
@@ -70,13 +71,13 @@ export function discoveryTasksRouter({ pool, rabbitmq, log, campaignServiceClien
     if (type === 'parse' && params.campaignName && !params.campaignId) {
        try {
          // Call campaign-service to create a new campaign
-         const createCampRes = await campaignServiceClient.post<any>('/api/campaigns', {
+         const createCampRes = await campaignServiceClient.post<{ id: string }>('/api/campaigns', {
             name: params.campaignName,
          }, undefined, { organizationId, userId: req.user?.id });
          finalParams.campaignId = createCampRes.id;
          delete finalParams.campaignName;
-       } catch (err: any) {
-         log.warn({ message: 'Failed to create campaign for discovery task', error: err?.message });
+       } catch (err: unknown) {
+         log.warn({ message: 'Failed to create campaign for discovery task', error: err instanceof Error ? err.message : String(err) });
          throw new AppError(500, 'Failed to create campaign for export', ErrorCodes.INTERNAL_ERROR);
        }
     }
@@ -150,7 +151,8 @@ export function discoveryTasksRouter({ pool, rabbitmq, log, campaignServiceClien
           type: EventType.DISCOVERY_TASK_STARTED,
           timestamp: new Date(),
           organizationId,
-          userId: (req as any).user?.id,
+          userId: req.user?.id,
+          correlationId: req.correlationId,
           data: { taskId: id, name: taskName },
         } as any);
       } catch (err) {

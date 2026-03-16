@@ -21,6 +21,7 @@ import {
   Percent,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { reportError, reportWarning } from '@/lib/error-reporter';
 import {
   fetchCampaign,
   fetchCampaignStats,
@@ -170,7 +171,7 @@ export default function CampaignDetailPage() {
       setCampaign(c);
       setStats(s || null);
     } catch (e) {
-      console.error('Failed to load campaign', e);
+      reportError(e, { component: 'CampaignPage', action: 'loadCampaign' });
       setCampaign(null);
       setStats(null);
     } finally {
@@ -184,7 +185,7 @@ export default function CampaignDetailPage() {
       const a = await fetchCampaignAnalytics(id, { days: analyticsDays });
       setAnalytics(a);
     } catch (e) {
-      console.error('Failed to load campaign analytics', e);
+      reportError(e, { component: 'CampaignPage', action: 'loadCampaignAnalytics' });
       setAnalytics(null);
     }
   };
@@ -219,13 +220,13 @@ export default function CampaignDetailPage() {
         try {
           await enrichContactsFromTelegram(contactIds, aud.bdAccountId);
         } catch (e) {
-          console.warn('Enrich contacts before start failed:', e);
+          reportWarning('Enrich contacts before start failed', { component: 'CampaignPage', error: e });
         }
       }
       await startCampaign(id);
       load();
     } catch (e) {
-      console.error('Failed to start campaign', e);
+      reportError(e, { component: 'CampaignPage', action: 'startCampaign' });
     } finally {
       setActionLoading(false);
     }
@@ -257,7 +258,7 @@ export default function CampaignDetailPage() {
       await pauseCampaign(id);
       load();
     } catch (e) {
-      console.error('Failed to pause campaign', e);
+      reportError(e, { component: 'CampaignPage', action: 'pauseCampaign' });
     } finally {
       setActionLoading(false);
     }
@@ -270,7 +271,7 @@ export default function CampaignDetailPage() {
       await updateCampaign(id, { status: 'completed' });
       load();
     } catch (e) {
-      console.error('Failed to stop campaign', e);
+      reportError(e, { component: 'CampaignPage', action: 'stopCampaign' });
     } finally {
       setActionLoading(false);
     }
@@ -693,7 +694,7 @@ export default function CampaignDetailPage() {
                     });
                     await load();
                   } catch (e) {
-                    console.error('Failed to remove participant', e);
+                    reportError(e, { component: 'CampaignPage', action: 'removeParticipant' });
                   }
                 }
               : undefined
@@ -712,7 +713,7 @@ export default function CampaignDetailPage() {
                     });
                     await load();
                   } catch (e) {
-                    console.error('Failed to remove all participants', e);
+                    reportError(e, { component: 'CampaignPage', action: 'removeAllParticipants' });
                   }
                 }
               : undefined

@@ -2,11 +2,22 @@ import { Router } from 'express';
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
+import { z } from 'zod';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, TeamMemberAddedEvent } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, canPermission, requireUser, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, canPermission, requireUser, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { normalizeRole, auditLog, getClientIp } from '../helpers';
+
+const InviteMemberSchema = z.object({
+  email: z.string().email().max(254).transform((s) => s.trim().toLowerCase()),
+  teamId: z.union([z.string().uuid(), z.literal('default')]).optional(),
+  role: z.string().max(64).optional(),
+});
+
+const UpdateRoleSchema = z.object({
+  role: z.string().min(1).max(64),
+});
 
 interface Deps {
   pool: Pool;
@@ -71,18 +82,9 @@ export function membersRouter({ pool, rabbitmq, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  router.post('/invite', asyncHandler(async (req, res) => {
+  router.post('/invite', validate(InviteMemberSchema), asyncHandler(async (req, res) => {
     const user = req.user;
-    const { teamId, email, role } = req.body;
-
-    if (!email || typeof email !== 'string') {
-      throw new AppError(400, 'Email is required', ErrorCodes.BAD_REQUEST);
-    }
-
-    const normalizedEmail = String(email).trim().toLowerCase();
-    if (!normalizedEmail) {
-      throw new AppError(400, 'Email is required', ErrorCodes.BAD_REQUEST);
-    }
+    const { teamId, email: normalizedEmail, role } = req.body;
 
     let actualTeamId = teamId;
     if (teamId === 'default' || !teamId) {
@@ -132,12 +134,13 @@ export function membersRouter({ pool, rabbitmq, log }: Deps): Router {
         );
 
         const event: TeamMemberAddedEvent = {
-        id: randomUUID(),
-        type: EventType.TEAM_MEMBER_ADDED,
-        timestamp: new Date(),
-        organizationId: user.organizationId,
-        userId: user.id,
-        data: { teamId: actualTeamId, userId: existingUserId, role: normalizedRole },
+          id: randomUUID(),
+          type: EventType.TEAM_MEMBER_ADDED,
+          timestamp: new Date(),
+          organizationId: user.organizationId,
+          userId: user.id,
+          correlationId: req.correlationId,
+          data: { teamId: actualTeamId, userId: existingUserId, role: normalizedRole },
         };
         await rabbitmq.publishEvent(event);
 
@@ -200,7 +203,7 @@ export function membersRouter({ pool, rabbitmq, log }: Deps): Router {
     }
   }));
 
-  router.put('/:id/role', asyncHandler(async (req, res) => {
+  router.put('/:id/role', validate(UpdateRoleSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const roleLower = (user.role || '').toLowerCase();
     const isOwnerOrAdmin = roleLower === 'owner' || roleLower === 'admin';
@@ -211,7 +214,7 @@ export function membersRouter({ pool, rabbitmq, log }: Deps): Router {
 
     const { id } = req.params;
     const { role } = req.body;
-    const normalizedRole = normalizeRole(role);
+    const normalizedRole = normalizeRole(role as string);
 
     let oldRole: string | undefined;
     let result: { rows: unknown[] };

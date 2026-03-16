@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { AppError, ErrorCodes, parseLimit } from '@getsale/service-core';
 
 /** Parse page and limit from query; default limit 20, max 100. Uses shared parseLimit for consistency. */
@@ -74,6 +74,76 @@ export async function ensureEntityAccess(
       ErrorCodes.NOT_FOUND
     );
   }
+}
+
+const ENTITY_TYPE = ['contact', 'deal'] as const;
+export type NotesRemindersEntityType = (typeof ENTITY_TYPE)[number];
+
+/** List notes for a contact or deal. Use after ensureEntityAccess. */
+export async function getNotesForEntity(
+  pool: Pool,
+  organizationId: string,
+  entityType: NotesRemindersEntityType,
+  entityId: string
+): Promise<Record<string, unknown>[]> {
+  const r = await pool.query(
+    `SELECT id, entity_type, entity_id, content, user_id, created_at, updated_at
+     FROM notes WHERE organization_id = $1 AND entity_type = $2 AND entity_id = $3
+     ORDER BY created_at DESC`,
+    [organizationId, entityType, entityId]
+  );
+  return r.rows;
+}
+
+/** Insert a note within an existing withOrgContext transaction. */
+export async function insertNote(
+  client: PoolClient,
+  organizationId: string,
+  entityType: NotesRemindersEntityType,
+  entityId: string,
+  content: string,
+  userId: string | null
+): Promise<Record<string, unknown>> {
+  const result = await client.query(
+    `INSERT INTO notes (organization_id, entity_type, entity_id, content, user_id)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [organizationId, entityType, entityId, content, userId]
+  );
+  return result.rows[0] as Record<string, unknown>;
+}
+
+/** List reminders for a contact or deal. Use after ensureEntityAccess. */
+export async function getRemindersForEntity(
+  pool: Pool,
+  organizationId: string,
+  entityType: NotesRemindersEntityType,
+  entityId: string
+): Promise<Record<string, unknown>[]> {
+  const r = await pool.query(
+    `SELECT id, entity_type, entity_id, remind_at, title, done, user_id, created_at
+     FROM reminders WHERE organization_id = $1 AND entity_type = $2 AND entity_id = $3
+     ORDER BY remind_at ASC`,
+    [organizationId, entityType, entityId]
+  );
+  return r.rows;
+}
+
+/** Insert a reminder within an existing withOrgContext transaction. */
+export async function insertReminder(
+  client: PoolClient,
+  organizationId: string,
+  entityType: NotesRemindersEntityType,
+  entityId: string,
+  remindAt: Date,
+  title: string | null,
+  userId: string | null
+): Promise<Record<string, unknown>> {
+  const result = await client.query(
+    `INSERT INTO reminders (organization_id, entity_type, entity_id, remind_at, title, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [organizationId, entityType, entityId, remindAt, title, userId]
+  );
+  return result.rows[0] as Record<string, unknown>;
 }
 
 export function parseCsvLine(line: string): string[] {

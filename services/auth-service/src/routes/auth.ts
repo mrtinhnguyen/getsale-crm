@@ -2,10 +2,10 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
-import { EventType, UserCreatedEvent } from '@getsale/events';
+import { EventType, UserCreatedEvent, type Event } from '@getsale/events';
 import { UserRole } from '@getsale/types';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, ServiceHttpClient } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import {
@@ -27,8 +27,6 @@ interface Deps {
   rabbitmq: RabbitMQClient;
   log: Logger;
   redis: RedisClient;
-  /** Optional: used to create default pipeline for new orgs (pipeline-service internal API) */
-  pipelineClient?: ServiceHttpClient | null;
 }
 
 const REFRESH_RATE_LIMIT = 5;
@@ -48,6 +46,25 @@ const SIGNUP_RATE_WINDOW_SEC = Math.ceil(SIGNUP_RATE_WINDOW_MS / 1000);
 
 const ORG_NAME_MAX_LEN = 200;
 const ORG_SLUG_MAX_LEN = 100;
+
+const SignupSchema = z.object({
+  email: z.string().email('Invalid email format').max(254).trim().toLowerCase(),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(128, 'Password must be at most 128 characters')
+    .refine((p) => /[a-z]/.test(p), 'Password must contain a lowercase letter')
+    .refine((p) => /[A-Z]/.test(p), 'Password must contain an uppercase letter')
+    .refine((p) => /[0-9]/.test(p), 'Password must contain a digit'),
+  organizationName: z.string().max(ORG_NAME_MAX_LEN).trim().optional(),
+  inviteToken: z.string().min(1).optional(),
+});
+
+const SigninSchema = z.object({
+  email: z.string().email('Invalid email format').max(254).trim().toLowerCase(),
+  password: z.string().min(1, 'Password is required'),
+});
+
+const VerifyBodySchema = z.object({
+  token: z.string().min(1).optional(),
+});
 
 function getClientIp(req: { ip?: string; headers?: Record<string, string | string[] | undefined> }): string {
   const forwarded = req.headers?.['x-forwarded-for'];
@@ -111,10 +128,10 @@ export function setAuthCookiesAndRespond(
   res.json({ user: { id: user.id, email: user.email, organizationId: user.organizationId, role: user.role } });
 }
 
-export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps): Router {
+export function authRouter({ pool, rabbitmq, log, redis }: Deps): Router {
   const router = Router();
 
-  router.post('/signup', asyncHandler(async (req, res) => {
+  router.post('/signup', validate(SignupSchema), asyncHandler(async (req, res) => {
     await checkRateLimit(redis, {
       keyPrefix: 'auth_rate:signup',
       clientId: getClientIp(req),
@@ -122,11 +139,10 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
       windowMs: SIGNUP_RATE_WINDOW_MS,
       message: 'Too many sign-up attempts. Try again later.',
     });
-    const { email, password } = validateEmailAndPassword(req.body, { requirePasswordLength: true });
-    const { organizationName, inviteToken } = (req.body as { organizationName?: unknown; inviteToken?: unknown });
+    const { email, password, organizationName, inviteToken } = req.body;
     const orgName =
-      organizationName != null && typeof organizationName === 'string' && organizationName.trim()
-        ? organizationName.trim().slice(0, ORG_NAME_MAX_LEN)
+      organizationName != null && String(organizationName).trim()
+        ? String(organizationName).trim().slice(0, ORG_NAME_MAX_LEN)
         : 'My Organization';
 
     let organization: { id: string; name: string };
@@ -201,21 +217,25 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
       client.release();
     }
 
-    if (createdNewOrg && pipelineClient) {
-      await pipelineClient
-        .post('/internal/pipeline/default-for-org', { organizationId: organization.id })
-        .catch((err) => {
-          log.warn({
-            message: 'Failed to create default pipeline for new organization',
-            organization_id: organization.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+    if (createdNewOrg) {
+      const org = organization as { id: string; name: string; slug?: string };
+      const orgEvent = {
+        id: randomUUID(),
+        type: EventType.ORGANIZATION_CREATED,
+        timestamp: new Date(),
+        organizationId: org.id,
+        userId: user.id,
+        correlationId: req.correlationId,
+        data: { organizationId: org.id, name: org.name, ...(org.slug != null ? { slug: org.slug } : {}) },
+      };
+      await rabbitmq.publishEvent(orgEvent as Event).catch((err) => {
+        log.warn({ message: 'Failed to publish ORGANIZATION_CREATED', organizationId: organization.id, error: err instanceof Error ? err.message : String(err) });
+      });
     }
 
     const event: UserCreatedEvent = {
       id: randomUUID(), type: EventType.USER_CREATED, timestamp: new Date(),
-      organizationId: organization.id, userId: user.id,
+      organizationId: organization.id, userId: user.id, correlationId: req.correlationId,
       data: { userId: user.id, email: user.email, organizationId: organization.id },
     };
     await rabbitmq.publishEvent(event).catch((err) => {
@@ -236,7 +256,7 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     });
   }));
 
-  router.post('/signin', asyncHandler(async (req, res) => {
+  router.post('/signin', validate(SigninSchema), asyncHandler(async (req, res) => {
     await checkRateLimit(redis, {
       keyPrefix: 'auth_rate:signin',
       clientId: getClientIp(req),
@@ -244,7 +264,7 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
       windowMs: SIGNIN_RATE_WINDOW_MS,
       message: 'Too many sign-in attempts. Try again later.',
     });
-    const { email, password } = validateEmailAndPassword(req.body, { requirePasswordLength: false });
+    const { email, password } = req.body;
 
     await checkRateLimit(redis, {
       keyPrefix: 'auth_rate:signin:email',
@@ -331,9 +351,9 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
     res.status(204).send();
   }));
 
-  router.post('/verify', asyncHandler(async (req, res) => {
+  router.post('/verify', validate(VerifyBodySchema), asyncHandler(async (req, res) => {
     const token =
-      (req.body as { token?: string } | undefined)?.token ||
+      req.body?.token ||
       req.cookies?.[AUTH_COOKIE_ACCESS] ||
       req.headers.authorization?.replace(/^Bearer\s+/i, '')?.trim();
     if (!token) throw new AppError(400, 'Token required', ErrorCodes.BAD_REQUEST);
@@ -406,7 +426,7 @@ export function authRouter({ pool, rabbitmq, log, redis, pipelineClient }: Deps)
   }));
 
   router.post('/refresh', asyncHandler(async (req, res) => {
-    const clientId = req.ip || 'unknown';
+    const clientId = getClientIp(req);
     await checkRateLimit(redis, {
       keyPrefix: 'auth_rate:refresh',
       clientId,

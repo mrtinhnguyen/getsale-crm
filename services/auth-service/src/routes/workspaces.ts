@@ -1,9 +1,14 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
+import { z } from 'zod';
 import { extractBearerToken, signAccessToken } from '../helpers';
 import { AUTH_COOKIE_ACCESS, AUTH_COOKIE_OPTS, ACCESS_MAX_AGE_SEC } from '../cookies';
+
+const SwitchWorkspaceSchema = z.object({
+  organizationId: z.string().uuid(),
+});
 
 interface Deps {
   pool: Pool;
@@ -25,10 +30,9 @@ export function workspacesRouter({ pool }: Deps): Router {
     res.json(rows.rows);
   }));
 
-  router.post('/switch-workspace', asyncHandler(async (req, res) => {
+  router.post('/switch-workspace', validate(SwitchWorkspaceSchema), asyncHandler(async (req, res) => {
     const decoded = extractBearerToken(req, req.cookies?.[AUTH_COOKIE_ACCESS]);
     const { organizationId } = req.body;
-    if (!organizationId) throw new AppError(400, 'organizationId required', ErrorCodes.BAD_REQUEST);
 
     const member = await pool.query(
       'SELECT om.role FROM organization_members om WHERE om.user_id = $1 AND om.organization_id = $2',

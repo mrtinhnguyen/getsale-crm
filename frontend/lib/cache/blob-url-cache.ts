@@ -1,3 +1,5 @@
+import { reportWarning } from '../error-reporter';
+
 /**
  * LRU cache for blob URLs (avatars, media).
  * Keys: e.g. "avatar:account:${id}", "avatar:chat:${bdAccountId}:${chatId}", or full media URL.
@@ -36,7 +38,9 @@ class BlobUrlCache {
       if (oldUrl) {
         try {
           URL.revokeObjectURL(oldUrl);
-        } catch (_) {}
+        } catch (e) {
+          reportWarning('URL.revokeObjectURL failed on eviction', { error: e, key: firstKey });
+        }
       }
     }
     this.map.set(key, blobUrl);
@@ -53,7 +57,9 @@ class BlobUrlCache {
     if (url) {
       try {
         URL.revokeObjectURL(url);
-      } catch (_) {}
+      } catch (e) {
+        reportWarning('URL.revokeObjectURL failed on delete', { error: e, key });
+      }
     }
   }
 

@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, canPermission, validate } from '@getsale/service-core';
 import { TelegramManager } from '../telegram';
 import { getTelegramApiCredentials, getAccountOr404, requireAccountOwner, requireBidiOwnAccount } from '../helpers';
 import { encryptSession, decryptIfNeeded } from '../crypto';
@@ -15,6 +16,30 @@ interface Deps {
   log: Logger;
   telegramManager: TelegramManager;
 }
+
+const SendCodeSchema = z.object({
+  platform: z.literal('telegram'),
+  phoneNumber: z.string().min(1).max(32).trim(),
+});
+
+const VerifyCodeSchema = z.object({
+  accountId: z.string().uuid(),
+  phoneNumber: z.string().min(1).max(32).trim(),
+  phoneCode: z.string().min(1).max(16).trim(),
+  phoneCodeHash: z.string().min(1).max(512),
+  password: z.string().max(256).optional(),
+});
+
+const QrLoginPasswordSchema = z.object({
+  sessionId: z.string().min(1).max(256),
+  password: z.string().min(1).max(256),
+});
+
+const ConnectSchema = z.object({
+  platform: z.literal('telegram'),
+  phoneNumber: z.string().min(1).max(32).trim(),
+  sessionString: z.string().max(10000).optional(),
+});
 
 export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Router {
   const router = Router();
@@ -36,7 +61,7 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
     res.json(state);
   }));
 
-  // Start QR-code login
+  // Start QR-code login (no body)
   router.post('/start-qr-login', asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { apiId, apiHash } = getTelegramApiCredentials();
@@ -52,15 +77,8 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
   }));
 
   // Submit 2FA password for QR login
-  router.post('/qr-login-password', asyncHandler(async (req, res) => {
+  router.post('/qr-login-password', validate(QrLoginPasswordSchema), asyncHandler(async (req, res) => {
     const { sessionId, password } = req.body;
-
-    if (!sessionId || typeof sessionId !== 'string') {
-      throw new AppError(400, 'sessionId required', ErrorCodes.VALIDATION);
-    }
-    if (password == null || typeof password !== 'string') {
-      throw new AppError(400, 'password required', ErrorCodes.VALIDATION);
-    }
 
     const accepted = await telegramManager.submitQrLoginPassword(sessionId, password);
     if (!accepted) {
@@ -71,18 +89,10 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
   }));
 
   // Send authentication code (Telegram)
-  router.post('/send-code', asyncHandler(async (req, res) => {
+  router.post('/send-code', validate(SendCodeSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { platform, phoneNumber } = req.body;
     const { apiId, apiHash } = getTelegramApiCredentials();
-
-    if (!platform || !phoneNumber) {
-      throw new AppError(400, 'Missing required fields: platform, phoneNumber', ErrorCodes.VALIDATION);
-    }
-
-    if (platform !== 'telegram') {
-      throw new AppError(400, 'Unsupported platform', ErrorCodes.BAD_REQUEST);
-    }
 
     const otherOrgResult = await pool.query(
       'SELECT id FROM bd_accounts WHERE phone_number = $1 AND organization_id != $2 AND is_active = true',
@@ -131,13 +141,9 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
   }));
 
   // Verify code and complete authentication
-  router.post('/verify-code', asyncHandler(async (req, res) => {
+  router.post('/verify-code', validate(VerifyCodeSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { accountId, phoneNumber, phoneCode, phoneCodeHash, password } = req.body;
-
-    if (!accountId || !phoneNumber || !phoneCode || !phoneCodeHash) {
-      throw new AppError(400, 'Missing required fields: accountId, phoneNumber, phoneCode, phoneCodeHash', ErrorCodes.VALIDATION);
-    }
 
     await getAccountOr404(pool, accountId, organizationId, 'id');
 
@@ -192,6 +198,7 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
       timestamp: new Date(),
       organizationId,
       userId,
+      correlationId: req.correlationId,
       data: { bdAccountId: accountId, platform: 'telegram', userId },
     } as Event);
 
@@ -199,18 +206,10 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
   }));
 
   // Connect BD account — legacy endpoint for existing sessions
-  router.post('/connect', asyncHandler(async (req, res) => {
+  router.post('/connect', validate(ConnectSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { platform, phoneNumber, sessionString } = req.body;
     const { apiId, apiHash } = getTelegramApiCredentials();
-
-    if (!platform || !phoneNumber) {
-      throw new AppError(400, 'Missing required fields: platform, phoneNumber', ErrorCodes.VALIDATION);
-    }
-
-    if (platform !== 'telegram') {
-      throw new AppError(400, 'Unsupported platform', ErrorCodes.BAD_REQUEST);
-    }
 
     const existingResult = await pool.query(
       'SELECT id FROM bd_accounts WHERE phone_number = $1 AND organization_id = $2',
@@ -260,6 +259,7 @@ export function authRouter({ pool, rabbitmq, log, telegramManager }: Deps): Rout
       timestamp: new Date(),
       organizationId,
       userId,
+      correlationId: req.correlationId,
       data: { bdAccountId: accountId, platform: 'telegram', userId },
     } as Event);
 

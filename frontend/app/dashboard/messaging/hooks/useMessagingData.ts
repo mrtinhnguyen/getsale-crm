@@ -2,7 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { apiClient } from '@/lib/api/client';
-import { reportError } from '@/lib/error-reporter';
+import { reportError, reportWarning } from '@/lib/error-reporter';
 import { setCurrentMessagingChat } from '@/lib/messaging-open-chat';
 import {
   fetchContactNotes, fetchContactReminders,
@@ -46,16 +46,16 @@ export function useMessagingData(s: MessagingState) {
     if (!s.selectedAccountId) return [];
     s.setLoadingChats(true);
     try {
-      let chatsFromDB: unknown[] = [];
+      let chatsFromApi: unknown[] = [];
       try {
         const chatsResponse = await apiClient.get('/api/messaging/chats', {
           params: { channel: 'telegram', bdAccountId: s.selectedAccountId },
         });
-        chatsFromDB = chatsResponse.data || [];
+        chatsFromApi = chatsResponse.data || [];
       } catch (chatsError) {
-        console.warn('Could not fetch chats from messaging service:', chatsError);
+        reportWarning('Could not fetch chats from messaging service', { error: chatsError });
       }
-      const formattedChats = mapRawChatsToChatList(chatsFromDB as Record<string, unknown>[]);
+      const formattedChats = mapRawChatsToChatList(chatsFromApi as Record<string, unknown>[]);
       s.setChats(formattedChats);
       return formattedChats;
     } catch (error) {
@@ -119,7 +119,7 @@ export function useMessagingData(s: MessagingState) {
       if (chatUnread > 0) {
         s.setAccounts((prev) => prev.map((a) => a.id === s.selectedAccountId ? { ...a, unread_count: Math.max(0, (a.unread_count ?? 0) - chatUnread) } : a));
       }
-    } catch (error) { console.warn('Error marking as read:', error); }
+    } catch (error) { reportWarning('Error marking as read', { error }); }
   }, [s.selectedChat, s.selectedAccountId]);
 
   // ─── Initial load ────────────────────────────────────────────────
@@ -178,8 +178,8 @@ export function useMessagingData(s: MessagingState) {
       .get<unknown[]>('/api/messaging/chats', { params: { channel: 'telegram', bdAccountId: s.selectedAccountId } })
       .then((res) => {
         if (cancelled) return;
-        const chatsFromDB = Array.isArray(res.data) ? res.data : [];
-        s.setChats(mapRawChatsToChatList(chatsFromDB as Record<string, unknown>[]));
+        const chatsFromApi = Array.isArray(res.data) ? res.data : [];
+        s.setChats(mapRawChatsToChatList(chatsFromApi as Record<string, unknown>[]));
       })
       .catch((err) => { if (!cancelled) { reportError(err, { component: 'useMessagingData', action: 'autoFetchChats' }); s.setChats([]); } })
       .finally(() => { if (!cancelled) s.setLoadingChats(false); });
@@ -322,7 +322,9 @@ export function useMessagingData(s: MessagingState) {
     if (s.draftSaveTimerRef.current) clearTimeout(s.draftSaveTimerRef.current);
     s.draftSaveTimerRef.current = setTimeout(() => {
       s.draftSaveTimerRef.current = null;
-      apiClient.post(`/api/bd-accounts/${s.selectedAccountId}/draft`, { channelId, text, replyToMsgId }).catch(() => {});
+      apiClient.post(`/api/bd-accounts/${s.selectedAccountId}/draft`, { channelId, text, replyToMsgId }).catch((err) => {
+        reportWarning('Draft save failed', { error: err, component: 'useMessagingData', action: 'saveDraft' });
+      });
     }, 1500);
     return () => { if (s.draftSaveTimerRef.current) { clearTimeout(s.draftSaveTimerRef.current); s.draftSaveTimerRef.current = null; } };
   }, [s.selectedAccountId, s.selectedChat?.channel_id, s.newMessage, s.replyToMessage?.telegram_message_id]);

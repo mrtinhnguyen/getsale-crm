@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
+import { z } from 'zod';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, requireUser } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, requireUser, validate } from '@getsale/service-core';
+
+const UpgradeSchema = z.object({
+  plan: z.string().min(1, 'plan is required').max(64).trim(),
+  paymentMethodId: z.string().max(256).optional(),
+});
 
 interface Deps {
   pool: Pool;
@@ -30,13 +36,9 @@ export function subscriptionRouter({ pool, log, stripe }: Deps): Router {
     res.json(result.rows[0]);
   }));
 
-  router.post('/subscription/upgrade', asyncHandler(async (req, res) => {
+  router.post('/subscription/upgrade', validate(UpgradeSchema), asyncHandler(async (req, res) => {
     const { id, organizationId } = req.user;
-    const { plan, paymentMethodId } = req.body;
-
-    if (!plan || typeof plan !== 'string') {
-      throw new AppError(400, 'plan is required', ErrorCodes.BAD_REQUEST);
-    }
+    const { plan } = req.body as z.infer<typeof UpgradeSchema>;
 
     let customerId: string;
     const subResult = await pool.query(

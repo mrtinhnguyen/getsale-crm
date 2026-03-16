@@ -1,6 +1,7 @@
 // @ts-nocheck — GramJS types are incomplete
 import { TelegramClient, Api } from 'telegram';
 import { randomUUID } from 'crypto';
+import { getErrorMessage, getErrorCode } from '../helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog, TelegramSourceType, ResolvedSource, SearchResultChat } from './types';
 import type { ContactManager } from './contact-manager';
 import type { Pool } from 'pg';
@@ -82,9 +83,10 @@ export class ChatSync {
       }
       this.log.info({ message: `getDialogsAll folder=${folderId} fetched ${result.length} dialogs` });
       return result;
-    } catch (error: any) {
-      if (error?.message === 'TIMEOUT' || error?.message?.includes('TIMEOUT')) throw error;
-      this.log.error({ message: `Error getDialogsAll for ${accountId} folder ${folderId}`, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      const msg = getErrorMessage(error);
+      if (msg === 'TIMEOUT' || msg.includes('TIMEOUT')) throw error;
+      this.log.error({ message: `Error getDialogsAll for ${accountId} folder ${folderId}`, error: msg });
       throw error;
     }
   }
@@ -150,8 +152,8 @@ export class ChatSync {
           if (id != null) myChatIds.add(String(id));
         }
       }
-    } catch (e: any) {
-      this.log.warn({ message: 'Could not load dialogs for search filter', accountId, error: e?.message });
+    } catch (e: unknown) {
+      this.log.warn({ message: 'Could not load dialogs for search filter', accountId, error: getErrorMessage(e) });
     }
 
     function extractChatsFromResult(
@@ -228,8 +230,8 @@ export class ChatSync {
               samePeer: false,
             })
           );
-        } catch (e: any) {
-          if (e?.message?.includes('QUERY_TOO_SHORT') || (e as any)?.code === 'QUERY_TOO_SHORT') {
+        } catch (e: unknown) {
+          if (getErrorMessage(e).includes('QUERY_TOO_SHORT') || getErrorCode(e) === 'QUERY_TOO_SHORT') {
             const err = new Error('Query too short');
             (err as any).code = 'QUERY_TOO_SHORT';
             throw err;
@@ -297,7 +299,8 @@ export class ChatSync {
           if (lastPeer) {
             offsetPeer = await client.getInputEntity(lastPeer) as any;
           }
-        } catch (_) {
+        } catch (err) {
+          this.log.debug({ message: 'getInputEntity failed, stopping pagination', accountId, error: getErrorMessage(err) });
           break;
         }
 
@@ -306,13 +309,13 @@ export class ChatSync {
       }
 
       return out;
-    } catch (e: any) {
-      if (e?.message?.includes('QUERY_TOO_SHORT') || (e as any)?.code === 'QUERY_TOO_SHORT') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('QUERY_TOO_SHORT') || getErrorCode(e) === 'QUERY_TOO_SHORT') {
         const err = new Error('Query too short');
         (err as any).code = 'QUERY_TOO_SHORT';
         throw err;
       }
-      this.log.error({ message: 'searchGroupsByKeyword failed', accountId, query: q, error: e?.message || String(e) });
+      this.log.error({ message: 'searchGroupsByKeyword failed', accountId, query: q, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -419,8 +422,8 @@ export class ChatSync {
               limit: requestLimit,
             }));
           }
-        } catch (e: any) {
-          if (e?.message?.includes('QUERY_TOO_SHORT') || (e as any)?.code === 'QUERY_TOO_SHORT') {
+        } catch (e: unknown) {
+          if (getErrorMessage(e).includes('QUERY_TOO_SHORT') || getErrorCode(e) === 'QUERY_TOO_SHORT') {
             const err = new Error('Query too short');
             (err as any).code = 'QUERY_TOO_SHORT';
             throw err;
@@ -476,7 +479,8 @@ export class ChatSync {
           if (lastPeer) {
             offsetPeer = await client.getInputEntity(lastPeer) as any;
           }
-        } catch (_) {
+        } catch (err) {
+          this.log.debug({ message: 'getInputEntity failed, stopping pagination', accountId, error: getErrorMessage(err) });
           break;
         }
 
@@ -485,13 +489,13 @@ export class ChatSync {
       }
 
       return out;
-    } catch (e: any) {
-      if (e?.message?.includes('QUERY_TOO_SHORT') || (e as any)?.code === 'QUERY_TOO_SHORT') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('QUERY_TOO_SHORT') || getErrorCode(e) === 'QUERY_TOO_SHORT') {
         const err = new Error('Query too short');
         (err as any).code = 'QUERY_TOO_SHORT';
         throw err;
       }
-      this.log.error({ message: 'searchPublicChannelsByKeyword failed', accountId, query: q, error: e?.message || String(e) });
+      this.log.error({ message: 'searchPublicChannelsByKeyword failed', accountId, query: q, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -551,13 +555,13 @@ export class ChatSync {
       }
 
       return out;
-    } catch (e: any) {
-      if (e?.message?.includes('QUERY_TOO_SHORT') || e?.message?.includes('SEARCH_QUERY_EMPTY') || (e as any)?.code === 'QUERY_TOO_SHORT') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('QUERY_TOO_SHORT') || getErrorMessage(e).includes('SEARCH_QUERY_EMPTY') || getErrorCode(e) === 'QUERY_TOO_SHORT') {
         const err = new Error('Query too short');
         (err as any).code = 'QUERY_TOO_SHORT';
         throw err;
       }
-      this.log.error({ message: 'searchByContacts failed', accountId, query: q, error: e?.message || String(e) });
+      this.log.error({ message: 'searchByContacts failed', accountId, query: q, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -581,8 +585,8 @@ export class ChatSync {
         const username = (c?.username ?? '').trim() || undefined;
         return { chatId, title, peerType, membersCount, username };
       });
-    } catch (e: any) {
-      this.log.error({ message: 'getAdminedPublicChannels failed', accountId, error: e?.message || String(e) });
+    } catch (e: unknown) {
+      this.log.error({ message: 'getAdminedPublicChannels failed', accountId, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -663,13 +667,13 @@ export class ChatSync {
       if (entity instanceof Api.Chat) {
         return this.getBasicGroupParticipants(client, entity, excludeAdmins);
       }
-    } catch (e: any) {
-      if (e?.message?.includes('CHAT_ADMIN_REQUIRED') || (e as any)?.code === 'CHAT_ADMIN_REQUIRED') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('CHAT_ADMIN_REQUIRED') || getErrorCode(e) === 'CHAT_ADMIN_REQUIRED') {
         const err = new Error('No permission to get participants');
         (err as any).code = 'CHAT_ADMIN_REQUIRED';
         throw err;
       }
-      if (e?.message?.includes('CHANNEL_PRIVATE') || (e as any)?.code === 'CHANNEL_PRIVATE') {
+      if (getErrorMessage(e).includes('CHANNEL_PRIVATE') || getErrorCode(e) === 'CHANNEL_PRIVATE') {
         const err = new Error('Channel is private');
         (err as any).code = 'CHANNEL_PRIVATE';
         throw err;
@@ -715,18 +719,18 @@ export class ChatSync {
         ? offset + participants.length
         : null;
       return { users: out, nextOffset };
-    } catch (e: any) {
-      if (e?.message?.includes('CHAT_ADMIN_REQUIRED') || (e as any)?.code === 'CHAT_ADMIN_REQUIRED') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('CHAT_ADMIN_REQUIRED') || getErrorCode(e) === 'CHAT_ADMIN_REQUIRED') {
         const err = new Error('No permission to get participants');
         (err as any).code = 'CHAT_ADMIN_REQUIRED';
         throw err;
       }
-      if (e?.message?.includes('CHANNEL_PRIVATE') || (e as any)?.code === 'CHANNEL_PRIVATE') {
+      if (getErrorMessage(e).includes('CHANNEL_PRIVATE') || getErrorCode(e) === 'CHANNEL_PRIVATE') {
         const err = new Error('Channel is private');
         (err as any).code = 'CHANNEL_PRIVATE';
         throw err;
       }
-      this.log.error({ message: 'getChannelParticipants failed', accountId, channelId, error: e?.message || String(e) });
+      this.log.error({ message: 'getChannelParticipants failed', accountId, channelId, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -764,8 +768,8 @@ export class ChatSync {
       } else {
         entity = await client.getEntity(chatId);
       }
-    } catch (e: any) {
-      this.log.error({ message: 'Failed to resolve entity for getActiveParticipants', accountId, chatId, error: e?.message || String(e) });
+    } catch (e: unknown) {
+      this.log.error({ message: 'Failed to resolve entity for getActiveParticipants', accountId, chatId, error: getErrorMessage(e) });
       throw e;
     }
 
@@ -846,8 +850,8 @@ export class ChatSync {
       }
 
       return { users: usersResult };
-    } catch (e: any) {
-      this.log.error({ message: 'getActiveParticipants failed', accountId, chatId, error: e?.message || String(e) });
+    } catch (e: unknown) {
+      this.log.error({ message: 'getActiveParticipants failed', accountId, chatId, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -873,8 +877,8 @@ export class ChatSync {
       } else {
         throw new Error('Not a channel or supergroup');
       }
-    } catch (e: any) {
-      if (e?.message?.includes('CHANNEL_PRIVATE') || (e as any)?.code === 'CHANNEL_PRIVATE') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('CHANNEL_PRIVATE') || getErrorCode(e) === 'CHANNEL_PRIVATE') {
         const err = new Error('Channel is private or already left');
         (err as any).code = 'CHANNEL_PRIVATE';
         throw err;
@@ -883,11 +887,11 @@ export class ChatSync {
     }
     try {
       await client.invoke(new Api.channels.LeaveChannel({ channel: inputChannel }));
-    } catch (e: any) {
-      if (e?.message?.includes('USER_NOT_PARTICIPANT') || (e as any).code === 'USER_NOT_PARTICIPANT') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('USER_NOT_PARTICIPANT') || getErrorCode(e) === 'USER_NOT_PARTICIPANT') {
         return;
       }
-      this.log.error({ message: 'leaveChat failed', accountId, chatId, error: e?.message || String(e) });
+      this.log.error({ message: 'leaveChat failed', accountId, chatId, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -932,13 +936,13 @@ export class ChatSync {
         const title = (c.title ?? c.name ?? '').trim() || String(id);
         const peerType = (c as any).broadcast ? 'channel' : (c as any).megagroup ? 'group' : 'chat';
         return { chatId: String(id), title, peerType };
-      } catch (e: any) {
-        if (e?.message?.includes('INVITE_HASH_EXPIRED') || (e as any).code === 'INVITE_HASH_EXPIRED') {
+      } catch (e: unknown) {
+        if (getErrorMessage(e).includes('INVITE_HASH_EXPIRED') || getErrorCode(e) === 'INVITE_HASH_EXPIRED') {
           const err = new Error('Invite link expired');
           (err as any).code = 'INVITE_EXPIRED';
           throw err;
         }
-        if (e?.message?.includes('INVITE_HASH_INVALID') || (e as any).code === 'INVITE_HASH_INVALID') {
+        if (getErrorMessage(e).includes('INVITE_HASH_INVALID') || getErrorCode(e) === 'INVITE_HASH_INVALID') {
           const err = new Error('Invalid invite link');
           (err as any).code = 'INVALID_INVITE';
           throw err;
@@ -984,13 +988,13 @@ export class ChatSync {
       const title = (chat?.title ?? chat?.name ?? '').trim() || cid;
       const peerType = (chat as any)?.broadcast ? 'channel' : (chat as any)?.megagroup ? 'group' : 'chat';
       return { chatId: cid, title, peerType };
-    } catch (e: any) {
-      if (e?.message?.includes('USERNAME_NOT_OCCUPIED') || (e as any).code === 'USERNAME_NOT_OCCUPIED') {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('USERNAME_NOT_OCCUPIED') || getErrorCode(e) === 'USERNAME_NOT_OCCUPIED') {
         const err = new Error('Chat not found');
         (err as any).code = 'CHAT_NOT_FOUND';
         throw err;
       }
-      this.log.error({ message: 'resolveChatFromInput failed', accountId, input: raw, error: e?.message || String(e) });
+      this.log.error({ message: 'resolveChatFromInput failed', accountId, input: raw, error: getErrorMessage(e) });
       throw e;
     }
   }
@@ -1021,8 +1025,8 @@ export class ChatSync {
       } else {
         entity = await client.getEntity(chatId);
       }
-    } catch (e: any) {
-      this.log.warn({ message: 'resolveSourceFromInput getEntity failed, using basic', accountId, input: raw, error: e?.message });
+    } catch (e: unknown) {
+      this.log.warn({ message: 'resolveSourceFromInput getEntity failed, using basic', accountId, input: raw, error: getErrorMessage(e) });
       return this.basicToResolvedSource(basic, input);
     }
 
@@ -1048,8 +1052,8 @@ export class ChatSync {
             type = 'channel';
           }
           if (fullChat?.participantsCount != null) membersCount = Number(fullChat.participantsCount);
-        } catch (e: any) {
-          this.log.warn({ message: 'GetFullChannel failed in resolveSource', accountId, chatId, error: e?.message });
+        } catch (e: unknown) {
+          this.log.warn({ message: 'GetFullChannel failed in resolveSource', accountId, chatId, error: getErrorMessage(e) });
           type = 'channel';
         }
       } else {
@@ -1060,8 +1064,8 @@ export class ChatSync {
           const full = await client.invoke(new Api.channels.GetFullChannel({ channel: inputChannel })) as any;
           const fullChat = full?.fullChat ?? full?.full_chat;
           if (fullChat?.participantsCount != null) membersCount = Number(fullChat.participantsCount);
-        } catch (e: any) {
-          this.log.warn({ message: 'GetFullChannel failed in resolveSource', accountId, chatId, error: e?.message });
+        } catch (e: unknown) {
+          this.log.warn({ message: 'GetFullChannel failed in resolveSource', accountId, chatId, error: getErrorMessage(e) });
         }
       }
     } else if (entity instanceof Api.Chat) {
@@ -1072,8 +1076,8 @@ export class ChatSync {
         const full = await client.invoke(new Api.messages.GetFullChat({ chatId: chatIdNum })) as any;
         const fullChat = full?.fullChat ?? full?.full_chat;
         if (fullChat?.participantsCount != null) membersCount = Number(fullChat.participantsCount);
-      } catch (e: any) {
-        this.log.warn({ message: 'GetFullChat failed in resolveSource', accountId, chatId, error: e?.message });
+      } catch (e: unknown) {
+        this.log.warn({ message: 'GetFullChat failed in resolveSource', accountId, chatId, error: getErrorMessage(e) });
       }
     } else {
       type = basic.peerType === 'channel' ? 'public_group' : 'unknown';
@@ -1289,8 +1293,8 @@ export class ChatSync {
           const peerInput = Number.isNaN(peerIdNum) ? tid : peerIdNum;
           const peer = await client.getInputEntity(peerInput);
           includePeers.push(new Api.InputDialogPeer({ peer }));
-        } catch (e: any) {
-          errors.push(`Chat ${tid}: ${e?.message || 'Failed to resolve'}`);
+        } catch (e: unknown) {
+          errors.push(`Chat ${tid}: ${getErrorMessage(e)}`);
         }
       }
 
@@ -1310,8 +1314,8 @@ export class ChatSync {
         });
         await client.invoke(new Api.messages.UpdateDialogFilter({ id: folderId, filter }));
         updated += 1;
-      } catch (e: any) {
-        if (e?.message?.includes('includePeers') || e?.message?.includes('include_peers')) {
+      } catch (e: unknown) {
+        if (getErrorMessage(e).includes('includePeers') || getErrorMessage(e).includes('include_peers')) {
           try {
             const filterAlt = new (Api as any).DialogFilter({
               id: folderId,
@@ -1332,7 +1336,7 @@ export class ChatSync {
             errors.push(`Folder "${title}" (id=${folderId}): ${e2?.message || String(e2)}`);
           }
         } else {
-          const msg = e?.message || String(e);
+          const msg = getErrorMessage(e);
           errors.push(`Folder "${title}" (id=${folderId}): ${msg}`);
         }
       }
@@ -1420,7 +1424,7 @@ export class ChatSync {
           peerType = 'channel';
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err?.message !== 'TIMEOUT' && !err?.message?.includes('builder.resolve')) {
         this.log.warn({ message: `tryAddChatFromSelectedFolders getEntity ${chatId}`, error: err?.message });
       }
@@ -1494,8 +1498,8 @@ export class ChatSync {
           const u = entity as Api.User;
           inputUsers.push(new Api.InputUser({ userId: u.id, accessHash: u.accessHash ?? BigInt(0) }));
         }
-      } catch (e: any) {
-        this.log.warn('[ChatSync] createSharedChat: could not resolve lead user', leadTelegramUserId, e?.message);
+      } catch (e: unknown) {
+        this.log.warn('[ChatSync] createSharedChat: could not resolve lead user', leadTelegramUserId, getErrorMessage(e));
       }
     }
     for (const username of extraUsernames) {
@@ -1507,8 +1511,8 @@ export class ChatSync {
           const user = entity as Api.User;
           inputUsers.push(new Api.InputUser({ userId: user.id, accessHash: user.accessHash ?? BigInt(0) }));
         }
-      } catch (e: any) {
-        this.log.warn('[ChatSync] createSharedChat: could not resolve username', u, e?.message);
+      } catch (e: unknown) {
+        this.log.warn('[ChatSync] createSharedChat: could not resolve username', u, getErrorMessage(e));
       }
     }
 
@@ -1530,8 +1534,8 @@ export class ChatSync {
       if (exported?.link && typeof exported.link === 'string') {
         inviteLink = exported.link.trim();
       }
-    } catch (e: any) {
-      this.log.warn({ message: "createSharedChat: could not export invite link", error: e?.message });
+    } catch (e: unknown) {
+      this.log.warn({ message: "createSharedChat: could not export invite link", error: getErrorMessage(e) });
     }
 
     return { channelId: String(channelId), title, inviteLink };

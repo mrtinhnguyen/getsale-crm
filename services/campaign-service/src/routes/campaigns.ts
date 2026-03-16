@@ -5,7 +5,7 @@ import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
 import { parseCsv, getBdAccountDisplayName, getSentTodayByAccount } from '../helpers';
 import { CampaignCreateSchema, CampaignPatchSchema, FromCsvBodySchema, ParticipantsBulkSchema, PresetCreateSchema } from '../validation';
 import type { QueryParam, CampaignRow, CampaignCountRow, CampaignRevenueRow, BdAccountRow } from '../types';
@@ -176,13 +176,16 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { organizationId } = req.user;
     const { name, channel, content } = req.body;
     const id = randomUUID();
-    await pool.query(
-      `INSERT INTO campaign_templates (id, organization_id, campaign_id, name, channel, content)
-       VALUES ($1, $2, NULL, $3, $4, $5)`,
-      [id, organizationId, name.trim(), channel || 'telegram', content]
-    );
-    const row = await pool.query('SELECT id, name, channel, content, created_at FROM campaign_templates WHERE id = $1', [id]);
-    res.status(201).json(row.rows[0]);
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      await client.query(
+        `INSERT INTO campaign_templates (id, organization_id, campaign_id, name, channel, content)
+         VALUES ($1, $2, NULL, $3, $4, $5)`,
+        [id, organizationId, name.trim(), channel || 'telegram', content]
+      );
+      const r = await client.query('SELECT id, name, channel, content, created_at FROM campaign_templates WHERE id = $1', [id]);
+      return r.rows[0];
+    });
+    res.status(201).json(row);
   }));
 
   router.get('/group-sources', asyncHandler(async (req, res) => {
@@ -339,23 +342,25 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     const { id: userId, organizationId } = req.user;
     const { name, companyId, pipelineId, targetAudience, schedule } = req.body;
     const id = randomUUID();
-    await pool.query(
-      `INSERT INTO campaigns (id, organization_id, company_id, pipeline_id, name, status, target_audience, schedule, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        id,
-        organizationId,
-        companyId || null,
-        pipelineId || null,
-        name.trim(),
-        CampaignStatus.DRAFT,
-        JSON.stringify(targetAudience || {}),
-        schedule ? JSON.stringify(schedule) : null,
-        userId || null,
-      ]
-    );
-    const row = await pool.query('SELECT * FROM campaigns WHERE id = $1', [id]);
-    const campaign = row.rows[0];
+    const campaign = await withOrgContext(pool, organizationId, async (client) => {
+      await client.query(
+        `INSERT INTO campaigns (id, organization_id, company_id, pipeline_id, name, status, target_audience, schedule, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          id,
+          organizationId,
+          companyId || null,
+          pipelineId || null,
+          name.trim(),
+          CampaignStatus.DRAFT,
+          JSON.stringify(targetAudience || {}),
+          schedule ? JSON.stringify(schedule) : null,
+          userId || null,
+        ]
+      );
+      const row = await client.query('SELECT * FROM campaigns WHERE id = $1', [id]);
+      return row.rows[0];
+    });
     try {
       await rabbitmq.publishEvent({
         id: randomUUID(),
@@ -363,6 +368,7 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
         timestamp: new Date(),
         organizationId,
         userId,
+        correlationId: req.correlationId,
         data: { campaignId: id },
       } as unknown as Event);
     } catch (err) {
@@ -390,12 +396,15 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     }
 
     if (onlyStop) {
-      await pool.query(
-        "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3",
-        [CampaignStatus.COMPLETED, id, organizationId]
-      );
-      const updated = await pool.query('SELECT * FROM campaigns WHERE id = $1', [id]);
-      return res.json(updated.rows[0]);
+      const updated = await withOrgContext(pool, organizationId, async (client) => {
+        await client.query(
+          "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3",
+          [CampaignStatus.COMPLETED, id, organizationId]
+        );
+        const row = await client.query('SELECT * FROM campaigns WHERE id = $1', [id]);
+        return row.rows[0];
+      });
+      return res.json(updated);
     }
 
     const updates: string[] = ['updated_at = NOW()'];
@@ -433,9 +442,11 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
       return res.json(existing.rows[0]);
     }
     params.push(id, organizationId);
-    const result = await pool.query(
-      `UPDATE campaigns SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
-      params
+    const result = await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        `UPDATE campaigns SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
+        params
+      )
     );
     res.json(result.rows[0]);
   }));
@@ -454,9 +465,11 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
     if (status === CampaignStatus.ACTIVE) {
       throw new AppError(400, 'Cannot delete active campaign; pause it first', ErrorCodes.BAD_REQUEST);
     }
-    await pool.query(
-      'UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
-      [id, organizationId]
+    await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        'UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
+        [id, organizationId]
+      )
     );
     res.status(204).send();
   }));

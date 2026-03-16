@@ -1,8 +1,9 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
+import { withOrgContext } from '@getsale/service-core';
 
 /** Single point of conversation creation. Call before saving any message. */
 export async function ensureConversation(
-  db: Pool,
+  db: Pool | PoolClient,
   params: { organizationId: string; bdAccountId: string | null; channel: string; channelId: string; contactId: string | null }
 ): Promise<void> {
   await db.query(
@@ -23,17 +24,19 @@ export async function ensureConversation(
 }
 
 /** Attach lead to conversation (idempotent by conversationId + leadId). Triggered by LEAD_CREATED_FROM_CAMPAIGN.
- *  On duplicate event delivery, UPDATE matches 0 rows (already same lead_id) — safe no-op. */
+ *  Scoped by organizationId; runs inside RLS context for defense-in-depth. On duplicate event delivery — safe no-op. */
 export async function attachLead(
-  db: Pool,
-  params: { conversationId: string; leadId: string; campaignId: string }
+  pool: Pool,
+  params: { conversationId: string; leadId: string; campaignId: string; organizationId: string }
 ): Promise<number> {
-  const r = await db.query(
-    `UPDATE conversations SET lead_id = $1, campaign_id = $2, became_lead_at = COALESCE(became_lead_at, NOW()), updated_at = NOW()
-     WHERE id = $3 AND (lead_id IS NULL OR lead_id = $1)`,
-    [params.leadId, params.campaignId, params.conversationId]
-  );
-  return r.rowCount ?? 0;
+  return withOrgContext(pool, params.organizationId, async (client) => {
+    const r = await client.query(
+      `UPDATE conversations SET lead_id = $1, campaign_id = $2, became_lead_at = COALESCE(became_lead_at, NOW()), updated_at = NOW()
+       WHERE id = $3 AND (lead_id IS NULL OR lead_id = $1)`,
+      [params.leadId, params.campaignId, params.conversationId]
+    );
+    return r.rowCount ?? 0;
+  });
 }
 
 export const MESSAGES_FOR_AI_LIMIT = 200;

@@ -15,7 +15,8 @@
     "@getsale/logger": "*",
     "@getsale/utils": "*",
     "@getsale/types": "*",
-    "@getsale/events": "*"
+    "@getsale/events": "*",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

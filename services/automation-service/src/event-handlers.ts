@@ -12,6 +12,7 @@ export interface AutomationEventPayload {
   type: string;
   organizationId?: string;
   userId?: string;
+  correlationId?: string;
   timestamp?: Date | string;
   data?: {
     leadId?: string;
@@ -479,6 +480,7 @@ export async function executeRule(deps: EventHandlerDeps, rule: AutomationRuleRo
       timestamp: new Date(),
       organizationId: event.organizationId ?? '',
       userId: event.userId,
+      correlationId: event.correlationId,
       data: {
         ruleId: rule.id,
         clientId: event.data?.clientId ?? event.data?.contactId ?? '',
@@ -541,6 +543,7 @@ async function notifyTeam(deps: EventHandlerDeps, action: AutomationAction, even
     timestamp: new Date(),
     organizationId: event.organizationId ?? '',
     userId: event.userId,
+    correlationId: event.correlationId,
     data: {
       type: 'notification',
       ruleId: '',

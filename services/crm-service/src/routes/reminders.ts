@@ -1,8 +1,20 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
-import { ensureEntityAccess } from '../helpers';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
+import { z } from 'zod';
+import { ensureEntityAccess, getRemindersForEntity, insertReminder } from '../helpers';
+
+const ReminderCreateSchema = z.object({
+  remind_at: z.coerce.date(),
+  title: z.string().max(500).trim().optional().nullable(),
+});
+
+const ReminderUpdateSchema = z.object({
+  done: z.boolean().optional(),
+  remind_at: z.coerce.date().optional(),
+  title: z.string().max(500).trim().optional().nullable(),
+});
 
 interface Deps {
   pool: Pool;
@@ -44,102 +56,88 @@ export function remindersRouter({ pool }: Deps): Router {
   // --- Contact reminders ---
   router.get('/contacts/:contactId/reminders', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    await ensureEntityAccess(pool, organizationId, 'contact', req.params.contactId);
-    const result = await pool.query(
-      `SELECT id, entity_type, entity_id, remind_at, title, done, user_id, created_at
-       FROM reminders WHERE organization_id = $1 AND entity_type = 'contact' AND entity_id = $2
-       ORDER BY remind_at ASC`,
-      [organizationId, req.params.contactId]
-    );
-    res.json(result.rows);
+    const { contactId } = req.params;
+    await ensureEntityAccess(pool, organizationId, 'contact', contactId);
+    const rows = await getRemindersForEntity(pool, organizationId, 'contact', contactId);
+    res.json(rows);
   }));
 
-  router.post('/contacts/:contactId/reminders', asyncHandler(async (req, res) => {
+  router.post('/contacts/:contactId/reminders', validate(ReminderCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { contactId } = req.params;
-    const at = parseRemindAt(req.body?.remind_at);
-    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 500) : null;
+    const { remind_at: at, title } = req.body;
     await ensureEntityAccess(pool, organizationId, 'contact', contactId);
-    const result = await pool.query(
-      `INSERT INTO reminders (organization_id, entity_type, entity_id, remind_at, title, user_id)
-       VALUES ($1, 'contact', $2, $3, $4, $5) RETURNING *`,
-      [organizationId, contactId, at, title, userId || null]
+    const row = await withOrgContext(pool, organizationId, (client) =>
+      insertReminder(client, organizationId, 'contact', contactId, at, title ?? null, userId || null)
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   // --- Deal reminders ---
   router.get('/deals/:dealId/reminders', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    await ensureEntityAccess(pool, organizationId, 'deal', req.params.dealId);
-    const result = await pool.query(
-      `SELECT id, entity_type, entity_id, remind_at, title, done, user_id, created_at
-       FROM reminders WHERE organization_id = $1 AND entity_type = 'deal' AND entity_id = $2
-       ORDER BY remind_at ASC`,
-      [organizationId, req.params.dealId]
-    );
-    res.json(result.rows);
+    const { dealId } = req.params;
+    await ensureEntityAccess(pool, organizationId, 'deal', dealId);
+    const rows = await getRemindersForEntity(pool, organizationId, 'deal', dealId);
+    res.json(rows);
   }));
 
-  router.post('/deals/:dealId/reminders', asyncHandler(async (req, res) => {
+  router.post('/deals/:dealId/reminders', validate(ReminderCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { dealId } = req.params;
-    const at = parseRemindAt(req.body?.remind_at);
-    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 500) : null;
+    const { remind_at: at, title } = req.body;
     await ensureEntityAccess(pool, organizationId, 'deal', dealId);
-    const result = await pool.query(
-      `INSERT INTO reminders (organization_id, entity_type, entity_id, remind_at, title, user_id)
-       VALUES ($1, 'deal', $2, $3, $4, $5) RETURNING *`,
-      [organizationId, dealId, at, title, userId || null]
+    const row = await withOrgContext(pool, organizationId, (client) =>
+      insertReminder(client, organizationId, 'deal', dealId, at, title ?? null, userId || null)
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   // --- Update / delete ---
-  router.patch('/reminders/:id', asyncHandler(async (req, res) => {
+  router.patch('/reminders/:id', validate(ReminderUpdateSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const existing = await pool.query('SELECT * FROM reminders WHERE id = $1 AND organization_id = $2', [id, organizationId]);
-    if (existing.rows.length === 0) throw new AppError(404, 'Reminder not found', ErrorCodes.NOT_FOUND);
+    const { done, remind_at, title } = req.body ?? {};
 
-    const { done, remind_at, title } = req.body || {};
-    const updates: string[] = [];
-    const params: unknown[] = [];
-    let idx = 1;
-    if (typeof done === 'boolean') { params.push(done); updates.push(`done = $${idx++}`); }
-    if (remind_at != null) {
-      const at = new Date(remind_at);
-      if (!Number.isNaN(at.getTime())) { params.push(at); updates.push(`remind_at = $${idx++}`); }
-    }
-    if (typeof title === 'string') { params.push(title.slice(0, 500)); updates.push(`title = $${idx++}`); }
-    if (params.length === 0) return res.json(existing.rows[0]);
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const existing = await client.query('SELECT * FROM reminders WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+      if (existing.rows.length === 0) throw new AppError(404, 'Reminder not found', ErrorCodes.NOT_FOUND);
 
-    params.push(id, organizationId);
-    const result = await pool.query(
-      `UPDATE reminders SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
-      params
-    );
-    res.json(result.rows[0]);
+      const updates: string[] = [];
+      const params: unknown[] = [];
+      let idx = 1;
+      if (typeof done === 'boolean') { params.push(done); updates.push(`done = $${idx++}`); }
+      if (remind_at != null) {
+        const at = new Date(remind_at);
+        if (!Number.isNaN(at.getTime())) { params.push(at); updates.push(`remind_at = $${idx++}`); }
+      }
+      if (title != null && typeof title === 'string') { params.push(title.slice(0, 500)); updates.push(`title = $${idx++}`); }
+      if (params.length === 0) return existing.rows[0];
+
+      params.push(id, organizationId);
+      const result = await client.query(
+        `UPDATE reminders SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
+        params
+      );
+      return result.rows[0];
+    });
+    res.json(row);
   }));
 
   router.delete('/reminders/:id', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
-    const result = await pool.query(
-      'DELETE FROM reminders WHERE id = $1 AND organization_id = $2 RETURNING id',
-      [req.params.id, organizationId]
-    );
-    if (result.rows.length === 0) throw new AppError(404, 'Reminder not found', ErrorCodes.NOT_FOUND);
+    const deleted = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        'DELETE FROM reminders WHERE id = $1 AND organization_id = $2 RETURNING id',
+        [req.params.id, organizationId]
+      );
+      return result.rowCount ?? 0;
+    });
+    if (deleted === 0) throw new AppError(404, 'Reminder not found', ErrorCodes.NOT_FOUND);
     res.status(204).send();
   }));
 
   return router;
-}
-
-function parseRemindAt(value: unknown): Date {
-  if (!value) throw new AppError(400, 'remind_at is required', ErrorCodes.VALIDATION);
-  const at = new Date(String(value));
-  if (Number.isNaN(at.getTime())) throw new AppError(400, 'remind_at must be a valid date', ErrorCodes.VALIDATION);
-  return at;
 }
 
 function formatReminder(r: Record<string, unknown>) {

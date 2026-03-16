@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
+import { z } from 'zod';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, canPermission, validate, withOrgContext, ServiceHttpClient } from '@getsale/service-core';
 import { TelegramManager } from '../telegram';
 import { requireAccountOwner, requireBidiOwnAccount, getAccountOr404 } from '../helpers';
 import { decryptIfNeeded } from '../crypto';
@@ -12,32 +13,59 @@ interface Deps {
   rabbitmq: RabbitMQClient;
   log: Logger;
   telegramManager: TelegramManager;
+  messagingClient: ServiceHttpClient;
 }
 
-export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): Router {
+export function accountsRouter({ pool, rabbitmq, log, telegramManager, messagingClient }: Deps): Router {
   const router = Router();
   const checkPermission = canPermission(pool);
 
+  const PurchaseSchema = z.object({
+    platform: z.string().min(1).max(64),
+    durationDays: z.number().int().min(1).max(3650),
+  });
+  const EnrichContactsSchema = z.object({
+    contactIds: z.array(z.string()).optional(),
+    bdAccountId: z.string().uuid().optional().nullable(),
+  });
+  const AccountPatchSchema = z.object({
+    display_name: z.string().max(500).trim().optional().nullable(),
+    proxy_config: z.object({
+      type: z.enum(['http', 'socks5']).optional(),
+      host: z.string().min(1).max(256),
+      port: z.number().int().min(1).max(65535),
+      username: z.string().max(256).optional(),
+      password: z.string().max(512).optional(),
+    }).nullable().optional(),
+  }).optional();
+  const AccountConfigSchema = z.object({
+    limits: z.record(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  }).optional();
+
   // POST routes with literal paths must be registered before /:id patterns
-  router.post('/purchase', asyncHandler(async (req, res) => {
+  router.post('/purchase', validate(PurchaseSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { platform, durationDays } = req.body;
 
     const expiresAt = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
 
-    const result = await pool.query(
-      `INSERT INTO bd_accounts (organization_id, user_id, platform, account_type, status, purchased_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [organizationId, userId, platform, 'rented', 'pending', new Date(), expiresAt]
-    );
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO bd_accounts (organization_id, user_id, platform, account_type, status, purchased_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [organizationId, userId, platform, 'rented', 'pending', new Date(), expiresAt]
+      );
+      return result.rows[0];
+    });
 
-    res.json(result.rows[0]);
+    res.json(row);
   }));
 
-  router.post('/enrich-contacts', asyncHandler(async (req, res) => {
+  router.post('/enrich-contacts', validate(EnrichContactsSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { contactIds = [], bdAccountId } = req.body;
-    const ids = Array.isArray(contactIds) ? contactIds.filter((x: unknown) => typeof x === 'string') : [];
+    const ids = contactIds;
     const result = await telegramManager.enrichContactsFromTelegram(organizationId, ids, bdAccountId);
     res.json(result);
   }));
@@ -105,10 +133,12 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
   }));
 
   // PATCH /:id — update display_name and/or proxy_config
-  router.patch('/:id', asyncHandler(async (req, res) => {
+  router.patch('/:id', validate(AccountPatchSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
-    const { display_name: displayName, proxy_config: proxyConfig } = req.body ?? {};
+    const body = req.body ?? {};
+    const displayName = body.display_name;
+    const proxyConfig = body.proxy_config;
 
     const accountResult = await pool.query(
       'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2',
@@ -155,9 +185,11 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
 
     sets.push('updated_at = NOW()');
     params.push(id);
-    await pool.query(
-      `UPDATE bd_accounts SET ${sets.join(', ')} WHERE id = $${idx}`,
-      params
+    await withOrgContext(pool, user.organizationId, (client) =>
+      client.query(
+        `UPDATE bd_accounts SET ${sets.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1}`,
+        [...params, user.organizationId]
+      )
     );
     res.json({ success: true });
   }));
@@ -198,17 +230,19 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
   }));
 
   // PUT /:id/config
-  router.put('/:id/config', asyncHandler(async (req, res) => {
+  router.put('/:id/config', validate(AccountConfigSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { limits, metadata } = req.body;
 
-    const result = await pool.query(
-      `UPDATE bd_accounts
-       SET limits = $1, metadata = $2, updated_at = NOW()
-       WHERE id = $3 AND organization_id = $4
-       RETURNING *`,
-      [JSON.stringify(limits || {}), JSON.stringify(metadata || {}), id, organizationId]
+    const result = await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        `UPDATE bd_accounts
+         SET limits = $1, metadata = $2, updated_at = NOW()
+         WHERE id = $3 AND organization_id = $4
+         RETURNING *`,
+        [JSON.stringify(limits || {}), JSON.stringify(metadata || {}), id, organizationId]
+      )
     );
 
     if (result.rows.length === 0) {
@@ -238,25 +272,30 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
       throw new AppError(403, 'No permission to enable account', ErrorCodes.FORBIDDEN);
     }
 
-    const row = accountResult.rows[0] as any;
+    const row = accountResult.rows[0] as Record<string, unknown> & { session_string?: string; api_hash?: string; session_encrypted?: unknown; organization_id?: string; created_by_user_id?: string; phone_number?: string; api_id?: string };
     if (!row.session_string) {
       throw new AppError(400, 'Account has no session; reconnect via QR or phone', ErrorCodes.BAD_REQUEST);
     }
 
-    const apiHash = decryptIfNeeded(row.api_hash, row.session_encrypted) || row.api_hash;
-    const sessionString = decryptIfNeeded(row.session_string, row.session_encrypted) || row.session_string;
+    const isEncrypted = Boolean(row.session_encrypted);
+    const apiHash = decryptIfNeeded(String(row.api_hash ?? ''), isEncrypted) || (row.api_hash as string);
+    const sessionString = decryptIfNeeded(String(row.session_string ?? ''), isEncrypted) || (row.session_string as string);
 
-    await pool.query(
-      'UPDATE bd_accounts SET is_active = true WHERE id = $1',
-      [id]
+    await withOrgContext(pool, user.organizationId, (client) =>
+      client.query(
+        'UPDATE bd_accounts SET is_active = true WHERE id = $1 AND organization_id = $2',
+        [id, user.organizationId]
+      )
     );
 
+    const orgId = String(row.organization_id ?? user.organizationId ?? '');
+    const createdBy = String(row.created_by_user_id ?? user.id ?? '');
     await telegramManager.connectAccount(
       id,
-      row.organization_id,
-      row.created_by_user_id || user.id,
-      row.phone_number || '',
-      parseInt(row.api_id, 10),
+      orgId,
+      createdBy,
+      row.phone_number ?? '',
+      Number(row.api_id) || 0,
       apiHash,
       sessionString
     );
@@ -285,11 +324,23 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager }: Deps): 
 
     await telegramManager.disconnectAccount(id);
 
-    await pool.query('UPDATE messages SET bd_account_id = NULL WHERE bd_account_id = $1', [id]);
-    await pool.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
-    await pool.query('DELETE FROM bd_account_sync_chats WHERE bd_account_id = $1', [id]);
-    await pool.query('DELETE FROM bd_account_sync_folders WHERE bd_account_id = $1', [id]);
-    await pool.query('DELETE FROM bd_accounts WHERE id = $1', [id]);
+    // S2/A1: messaging-service owns messages; orphan via internal API instead of direct UPDATE
+    await messagingClient.post(
+      '/internal/messages/orphan-by-bd-account',
+      { bdAccountId: id },
+      undefined,
+      { organizationId: user.organizationId }
+    ).catch((err: unknown) => {
+      log.warn({ message: 'Messaging orphan-by-bd-account failed (proceeding with account delete)', bdAccountId: id, error: String(err) });
+      // Proceed: account and sync tables will be removed; messages remain linked to deleted account until cleaned up
+    });
+
+    await withOrgContext(pool, user.organizationId, async (client) => {
+      await client.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
+      await client.query('DELETE FROM bd_account_sync_chats WHERE bd_account_id = $1', [id]);
+      await client.query('DELETE FROM bd_account_sync_folders WHERE bd_account_id = $1', [id]);
+      await client.query('DELETE FROM bd_accounts WHERE id = $1 AND organization_id = $2', [id, user.organizationId]);
+    });
 
     res.json({ success: true });
   }));

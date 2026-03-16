@@ -1,6 +1,25 @@
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { AppError, ErrorCodes } from '@getsale/service-core';
+
+/** Safe extraction of error message from unknown (catch). Use in catch (err: unknown) and for logging. */
+export function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err != null && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
+/** Safe extraction of optional .code from unknown (e.g. Telegram/DB errors). */
+export function getErrorCode(err: unknown): string | undefined {
+  if (err != null && typeof err === 'object' && 'code' in err) {
+    const c = (err as { code: unknown }).code;
+    return typeof c === 'string' ? c : undefined;
+  }
+  return undefined;
+}
 import { TelegramManager } from './telegram';
 
 /** Row from bd_account_sync_folders (folder_id). */

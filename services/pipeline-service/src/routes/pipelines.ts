@@ -1,7 +1,20 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
+import { z } from 'zod';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
+
+const PipelineCreateSchema = z.object({
+  name: z.string().max(200).trim().optional(),
+  description: z.string().max(2000).trim().optional().nullable(),
+  isDefault: z.boolean().optional(),
+});
+
+const PipelineUpdateSchema = z.object({
+  name: z.string().max(200).trim().optional(),
+  description: z.string().max(2000).trim().optional().nullable(),
+  isDefault: z.boolean().optional(),
+});
 
 interface Deps {
   pool: Pool;
@@ -30,33 +43,34 @@ export function pipelinesRouter({ pool, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  router.post('/', asyncHandler(async (req, res) => {
+  router.post('/', validate(PipelineCreateSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { name, description, isDefault } = req.body;
 
-    if (isDefault === true) {
-      await pool.query('UPDATE pipelines SET is_default = false WHERE organization_id = $1', [organizationId]);
-    }
-
-    const result = await pool.query(
-      `INSERT INTO pipelines (organization_id, name, description, is_default)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [organizationId, name ?? 'New Pipeline', description ?? null, isDefault || false]
-    );
-    const pipeline = result.rows[0];
-
-    for (const stage of DEFAULT_STAGES) {
-      await pool.query(
-        `INSERT INTO stages (pipeline_id, organization_id, name, order_index, color)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [pipeline.id, organizationId, stage.name, stage.order_index, stage.color]
+    const pipeline = await withOrgContext(pool, organizationId, async (client) => {
+      if (isDefault === true) {
+        await client.query('UPDATE pipelines SET is_default = false WHERE organization_id = $1', [organizationId]);
+      }
+      const result = await client.query(
+        `INSERT INTO pipelines (organization_id, name, description, is_default)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [organizationId, name ?? 'New Pipeline', description ?? null, isDefault || false]
       );
-    }
+      const row = result.rows[0] as { id: string };
+      for (const stage of DEFAULT_STAGES) {
+        await client.query(
+          `INSERT INTO stages (pipeline_id, organization_id, name, order_index, color)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [row.id, organizationId, stage.name, stage.order_index, stage.color]
+        );
+      }
+      return row;
+    });
 
     res.status(201).json(pipeline);
   }));
 
-  router.put('/:id', asyncHandler(async (req, res) => {
+  router.put('/:id', validate(PipelineUpdateSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { name, description, isDefault } = req.body;
@@ -73,9 +87,6 @@ export function pipelinesRouter({ pool, log }: Deps): Router {
     if (name !== undefined) { params.push(name); updates.push(`name = $${idx++}`); }
     if (description !== undefined) { params.push(description ?? null); updates.push(`description = $${idx++}`); }
     if (isDefault !== undefined) {
-      if (isDefault === true) {
-        await pool.query('UPDATE pipelines SET is_default = false WHERE organization_id = $1', [organizationId]);
-      }
       params.push(!!isDefault);
       updates.push(`is_default = $${idx++}`);
     }
@@ -86,10 +97,15 @@ export function pipelinesRouter({ pool, log }: Deps): Router {
     }
 
     params.push(id, organizationId);
-    const result = await pool.query(
-      `UPDATE pipelines SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
-      params
-    );
+    const result = await withOrgContext(pool, organizationId, async (client) => {
+      if (isDefault === true) {
+        await client.query('UPDATE pipelines SET is_default = false WHERE organization_id = $1', [organizationId]);
+      }
+      return client.query(
+        `UPDATE pipelines SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
+        params
+      );
+    });
     res.json(result.rows[0]);
   }));
 
@@ -100,9 +116,11 @@ export function pipelinesRouter({ pool, log }: Deps): Router {
     const existing = await pool.query('SELECT id FROM pipelines WHERE id = $1 AND organization_id = $2', [id, organizationId]);
     if (existing.rows.length === 0) throw new AppError(404, 'Pipeline not found', ErrorCodes.NOT_FOUND);
 
-    await pool.query('DELETE FROM leads WHERE pipeline_id = $1', [id]);
-    await pool.query('DELETE FROM stages WHERE pipeline_id = $1', [id]);
-    await pool.query('DELETE FROM pipelines WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    await withOrgContext(pool, organizationId, async (client) => {
+      await client.query('DELETE FROM leads WHERE pipeline_id = $1', [id]);
+      await client.query('DELETE FROM stages WHERE pipeline_id = $1', [id]);
+      await client.query('DELETE FROM pipelines WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    });
     res.status(204).send();
   }));
 

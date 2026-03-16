@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, validate, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, validate, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
 import { ContactCreateSchema, ContactUpdateSchema, ContactImportSchema, ImportFromTelegramGroupSchema } from '../validation';
 import { parseCsvLine, parsePageLimit, buildPagedResponse } from '../helpers';
 import type { ServiceHttpClient } from '@getsale/service-core';
@@ -313,29 +313,31 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const { id: userId, organizationId } = req.user;
     const { firstName, lastName, displayName, username, email, phone, telegramId, companyId, consentFlags } = req.body;
 
-    if (companyId) {
-      const check = await pool.query('SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2', [companyId, organizationId]);
-      if (check.rows.length === 0) {
-        throw new AppError(400, 'Company not found or access denied', ErrorCodes.VALIDATION);
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      if (companyId) {
+        const check = await client.query('SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2', [companyId, organizationId]);
+        if (check.rows.length === 0) {
+          throw new AppError(400, 'Company not found or access denied', ErrorCodes.VALIDATION);
+        }
       }
-    }
-
-    const result = await pool.query(
-      `INSERT INTO contacts (organization_id, company_id, first_name, last_name, display_name, username, email, phone, telegram_id, consent_flags)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [organizationId, companyId ?? null,
-       (firstName ?? '').trim() || null, (lastName ?? '').trim() || null,
-       (displayName ?? '').trim() || null, (username ?? '').trim() || null,
-       email || null, phone ?? null, telegramId ?? null,
-       JSON.stringify(consentFlags ?? { email: false, sms: false, telegram: false, marketing: false })]
-    );
+      const result = await client.query(
+        `INSERT INTO contacts (organization_id, company_id, first_name, last_name, display_name, username, email, phone, telegram_id, consent_flags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [organizationId, companyId ?? null,
+         (firstName ?? '').trim() || null, (lastName ?? '').trim() || null,
+         (displayName ?? '').trim() || null, (username ?? '').trim() || null,
+         email || null, phone ?? null, telegramId ?? null,
+         JSON.stringify(consentFlags ?? { email: false, sms: false, telegram: false, marketing: false })]
+      );
+      return result.rows[0] as Record<string, unknown>;
+    });
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.CONTACT_CREATED, timestamp: new Date(),
-      organizationId, userId, data: { contactId: result.rows[0].id },
+      organizationId, userId, correlationId: req.correlationId, data: { contactId: row.id },
     } as Event);
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   const updateHandler = asyncHandler(async (req, res) => {
@@ -343,34 +345,36 @@ export function contactsRouter({ pool, rabbitmq, log, bdAccountsClient }: Deps):
     const { id } = req.params;
     const payload = req.body as Record<string, unknown>;
 
-    const existing = await pool.query('SELECT * FROM contacts WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL', [id, organizationId]);
-    if (existing.rows.length === 0) {
-      throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
-    }
-    if (payload.companyId !== undefined) {
-      const check = await pool.query('SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2', [payload.companyId, organizationId]);
-      if (check.rows.length === 0) {
-        throw new AppError(400, 'Company not found or access denied', ErrorCodes.VALIDATION);
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const existing = await client.query('SELECT * FROM contacts WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL', [id, organizationId]);
+      if (existing.rows.length === 0) {
+        throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
       }
-    }
-
-    const result = await pool.query(
-      `UPDATE contacts SET
-        first_name = COALESCE($2, first_name), last_name = $3, email = $4, phone = $5,
-        telegram_id = $6, company_id = $7, display_name = $8, username = $9,
-        consent_flags = COALESCE($10, consent_flags), updated_at = NOW()
-       WHERE id = $1 AND organization_id = $11 RETURNING *`,
-      [id, payload.firstName, payload.lastName ?? null, payload.email ?? null, payload.phone ?? null,
-       payload.telegramId ?? null, payload.companyId ?? null, payload.displayName ?? null, payload.username ?? null,
-       payload.consentFlags ? JSON.stringify(payload.consentFlags) : null, organizationId]
-    );
+      if (payload.companyId !== undefined) {
+        const check = await client.query('SELECT 1 FROM companies WHERE id = $1 AND organization_id = $2', [payload.companyId, organizationId]);
+        if (check.rows.length === 0) {
+          throw new AppError(400, 'Company not found or access denied', ErrorCodes.VALIDATION);
+        }
+      }
+      const result = await client.query(
+        `UPDATE contacts SET
+          first_name = COALESCE($2, first_name), last_name = $3, email = $4, phone = $5,
+          telegram_id = $6, company_id = $7, display_name = $8, username = $9,
+          consent_flags = COALESCE($10, consent_flags), updated_at = NOW()
+         WHERE id = $1 AND organization_id = $11 RETURNING *`,
+        [id, payload.firstName, payload.lastName ?? null, payload.email ?? null, payload.phone ?? null,
+         payload.telegramId ?? null, payload.companyId ?? null, payload.displayName ?? null, payload.username ?? null,
+         payload.consentFlags ? JSON.stringify(payload.consentFlags) : null, organizationId]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.CONTACT_UPDATED, timestamp: new Date(),
-      organizationId, userId, data: { contactId: id },
+      organizationId, userId, correlationId: req.correlationId, data: { contactId: id },
     } as Event);
 
-    res.json(result.rows[0]);
+    res.json(row);
   });
 
   router.put('/:id', validate(ContactUpdateSchema), updateHandler);

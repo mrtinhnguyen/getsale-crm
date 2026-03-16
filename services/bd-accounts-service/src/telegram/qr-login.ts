@@ -7,6 +7,7 @@ import {
   type Event,
 } from '@getsale/events';
 import { encryptSession } from '../crypto';
+import { getErrorMessage } from '../helpers';
 import { buildTelegramProxy } from './helpers';
 import type { TelegramManagerDeps, QrLoginState, QrSessionInternal, ProxyConfig, StructuredLog, TelegramClientInfo } from './types';
 import type { ConnectionManager } from './connection-manager';
@@ -224,7 +225,9 @@ export class QrLogin {
         }
         try {
           await client.disconnect();
-        } catch (_) {}
+        } catch (err) {
+          this.log.debug({ message: 'disconnect after QR error', error: getErrorMessage(err) });
+        }
       }
     })();
 

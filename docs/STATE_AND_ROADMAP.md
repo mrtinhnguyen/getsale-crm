@@ -88,6 +88,29 @@
 3. **Scale:** Стратегия партиционирования и/или архивации для таблицы `messages` при росте объёма; проверка нагрузки на 10k conversations.
 4. **Контракты схемы:** Зафиксировать ownership таблиц между сервисами (кто какие таблицы меняет), чтобы избежать конфликтов миграций при росте.
 
+### По результатам аудита 2026-03-18
+
+Полный отчёт: [ai_docs/develop/audits/2026-03-18-full-system-audit.md](../ai_docs/develop/audits/2026-03-18-full-system-audit.md).
+
+**Выполнено (ремедиация):**
+- **A1/S2:** Orphan messages при удалении аккаунта перенесён в messaging-service: добавлен `POST /internal/messages/orphan-by-bd-account`; bd-accounts вызывает его перед удалением и больше не делает `UPDATE messages`.
+- **S1:** Internal API messaging: приоритет заголовка `X-Organization-Id` над body для ensure и POST /messages.
+- **S3:** В DEPLOYMENT.md добавлена рекомендация задавать INTERNAL_AUTH_SECRET в dev/staging.
+- **S4:** Edit/delete-by-telegram требуют `X-Organization-Id` и проверяют `organization_id` в WHERE; bd-accounts MessageDb и event-handlers передают organizationId в контексте.
+- **S5:** В production ответ валидации internal — «Validation failed» без деталей Zod.
+- **A4:** GET /chats и GET /search в messaging обёрнуты в `withOrgContext`; internal ensure и POST /messages — в withOrgContext.
+- **Doc:** INTERNAL_API.md дополнен эндпоинтом orphan-by-bd-account и требованием X-Organization-Id для edit/delete-by-telegram.
+- **Q1 (баг):** В GET /chats внутри withOrgContext ранние выходы (channel!==telegram, !chats?.length) теперь возвращают `[]` из callback, а не вызывают res.json([]), чтобы избежать двойной отправки ответа.
+- **Q2:** В bd-accounts telegram-manager во всех пустых catch добавлено логирование (log.debug): disconnect, регистрация Raw/Short/NewMessage, UpdateUserTyping/ChatUserTyping/UpdateUserStatus/ReadHistoryInbox/ReadChannelInbox/UpdateDraftMessage, contact insert, wrap (other handlers).
+- **A5, Q1 (рефактор):** В messaging-service создан chats-list-helpers.ts (getSyncListQuery, getDefaultChatsQuery, normalizeChatRows, runSyncListQuery, runDefaultChatsQuery); GET /chats использует эти хелперы.
+- **Общий чат в списке:** После создания общего чата с лидом чат сразу появляется в списке чатов аккаунта: в bd-accounts-service после createSharedChat выполняется INSERT в bd_account_sync_chats (peer_type=chat); при выборе аккаунта список тянется из sync-chats.
+
+**Осталось:**
+- **P0 (опционально):** GET /chats без bdAccountId и GET /search всё ещё читают `bd_account_sync_chats` (JOIN). При желании перевести на вызов bd-accounts internal API.
+- **P1:** Дальнейшее разбиение chats.ts по необходимости; сократить any и вынести filterToApiMessages в bd-accounts Telegram (Q3–Q4).
+- **P2:** Слой репозитория (A3); god-модули bd-accounts Telegram (A6); CSP и theme script (S15, S16); DRY пагинация/API layer/типы (Q5–Q10).
+- **Бэклог:** A7–A14, S6–S14, Q11–Q16; метрики RabbitMQ; партиционирование messages; tracing; дисциплина доков и тестов.
+
 ---
 
 ## 3. Рекомендуемые следующие шаги

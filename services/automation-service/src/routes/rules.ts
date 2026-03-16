@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, validate, requireUser, requireRole, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, validate, requireUser, requireRole, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
 import { RuleCreateSchema, RunSlaCronBodySchema } from '../validation';
 
 interface Deps {
@@ -30,18 +30,21 @@ export function rulesRouter({ pool, rabbitmq, log, runSlaCronOnce }: Deps): Rout
     const { id: userId, organizationId } = req.user;
     const { name, triggerType, triggerConfig, conditions, actions, is_active } = req.body;
 
-    const result = await pool.query(
-      `INSERT INTO automation_rules (organization_id, name, trigger_type, trigger_conditions, actions, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [
-        organizationId,
-        name,
-        triggerType,
-        JSON.stringify(triggerConfig || {}),
-        JSON.stringify(actions ?? []),
-        is_active !== false,
-      ]
-    );
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO automation_rules (organization_id, name, trigger_type, trigger_conditions, actions, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [
+          organizationId,
+          name,
+          triggerType,
+          JSON.stringify(triggerConfig || {}),
+          JSON.stringify(actions ?? []),
+          is_active !== false,
+        ]
+      );
+      return result.rows[0] as { id: string };
+    });
 
     try {
       const createdEvent = {
@@ -50,14 +53,15 @@ export function rulesRouter({ pool, rabbitmq, log, runSlaCronOnce }: Deps): Rout
         timestamp: new Date(),
         organizationId,
         userId,
-        data: { ruleId: result.rows[0].id },
+        correlationId: req.correlationId,
+        data: { ruleId: row.id },
       };
       await rabbitmq.publishEvent(createdEvent as Event);
     } catch (pubErr) {
       log.warn({ message: 'Failed to publish AUTOMATION_RULE_CREATED', error: String(pubErr) });
     }
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   // Internal endpoint for e2e: single SLA cron run (admin/owner only)
@@ -67,9 +71,7 @@ export function rulesRouter({ pool, rabbitmq, log, runSlaCronOnce }: Deps): Rout
     requireRole('owner', 'admin'),
     validate(RunSlaCronBodySchema, 'body'),
     asyncHandler(async (req, res) => {
-      const fromBody = req.body?.organizationId;
-      const fromHeader = typeof req.headers['x-organization-id'] === 'string' ? req.headers['x-organization-id'] : undefined;
-      const filterOrgId = fromBody ?? fromHeader ?? req.user?.organizationId;
+      const filterOrgId = req.user?.organizationId;
       const filterLeadId = req.body?.leadId;
       await runSlaCronOnce(filterOrgId || undefined, filterLeadId);
       res.json({ ok: true });

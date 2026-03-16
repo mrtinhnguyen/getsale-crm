@@ -103,6 +103,8 @@ export interface BaseEvent {
   timestamp: Date;
   organizationId: string;
   userId?: string;
+  /** Request/flow correlation for tracing across services. */
+  correlationId?: string;
   metadata?: Record<string, any>;
 }
 
@@ -112,6 +114,15 @@ export interface UserCreatedEvent extends BaseEvent {
     userId: string;
     email: string;
     organizationId: string;
+  };
+}
+
+export interface OrganizationCreatedEvent extends BaseEvent {
+  type: EventType.ORGANIZATION_CREATED;
+  data: {
+    organizationId: string;
+    name?: string;
+    slug?: string;
   };
 }
 
@@ -462,6 +473,16 @@ export interface LeadCreatedEvent extends BaseEvent {
   };
 }
 
+export interface CampaignStartedEvent extends BaseEvent {
+  type: EventType.CAMPAIGN_STARTED;
+  data: { campaignId: string };
+}
+
+export interface CampaignPausedEvent extends BaseEvent {
+  type: EventType.CAMPAIGN_PAUSED;
+  data: { campaignId: string };
+}
+
 export interface LeadStageChangedEvent extends BaseEvent {
   type: EventType.LEAD_STAGE_CHANGED;
   data: {
@@ -593,8 +614,9 @@ export interface DiscoveryTaskStartedEvent extends BaseEvent {
   data: { taskId: string; name?: string };
 }
 
-export type Event = 
+export type Event =
   | UserCreatedEvent
+  | OrganizationCreatedEvent
   | MessageReceivedEvent
   | MessageSentEvent
   | MessageDeletedEvent
@@ -629,6 +651,8 @@ export type Event =
   | StageDeletedEvent
   | LeadCreatedEvent
   | LeadStageChangedEvent
+  | CampaignStartedEvent
+  | CampaignPausedEvent
   | LeadCreatedFromCampaignEvent
   | LeadConvertedEvent
   | LeadSlaBreachEvent

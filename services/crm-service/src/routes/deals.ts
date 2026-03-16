@@ -5,7 +5,7 @@ import { Counter } from 'prom-client';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, validate, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, validate, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
 import { DealCreateSchema, DealUpdateSchema, DealStageUpdateSchema } from '../validation';
 import { getFirstStageId, ensureStageInPipeline, parsePageLimit, buildPagedResponse } from '../helpers';
 
@@ -148,50 +148,56 @@ export function dealsRouter({ pool, rabbitmq, log, dealCreatedTotal, dealStageCh
       if (cc.rows.length === 0) throw new AppError(400, 'Contact not found or access denied', ErrorCodes.VALIDATION);
     }
 
-    const result = await pool.query(
-      `INSERT INTO deals (organization_id, company_id, contact_id, pipeline_id, stage_id, owner_id, created_by_id,
-        title, value, currency, probability, expected_close_date, comments, history, bd_account_id, channel, channel_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-      [organizationId, resolvedCompanyId, contactId ?? null, pipelineId, stageId, userId, userId,
-       title, value ?? null, currency ?? null, probability ?? null, expectedCloseDate ?? null, comments ?? null,
-       JSON.stringify([{ id: randomUUID(), action: 'created', toStageId: stageId, performedBy: userId, timestamp: new Date() }]),
-       bdAccountId ?? null, channel ?? null, channelId ?? null]
-    );
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO deals (organization_id, company_id, contact_id, pipeline_id, stage_id, owner_id, created_by_id,
+          title, value, currency, probability, expected_close_date, comments, history, bd_account_id, channel, channel_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+        [organizationId, resolvedCompanyId, contactId ?? null, pipelineId, stageId, userId, userId,
+         title, value ?? null, currency ?? null, probability ?? null, expectedCloseDate ?? null, comments ?? null,
+         JSON.stringify([{ id: randomUUID(), action: 'created', toStageId: stageId, performedBy: userId, timestamp: new Date() }]),
+         bdAccountId ?? null, channel ?? null, channelId ?? null]
+      );
+      return result.rows[0];
+    });
 
     dealCreatedTotal.inc();
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.DEAL_CREATED, timestamp: new Date(),
-      organizationId, userId, data: { dealId: result.rows[0].id, pipelineId, stageId },
+      organizationId, userId, correlationId: req.correlationId, data: { dealId: row.id, pipelineId, stageId },
     } as Event);
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   router.put('/:id', validate(DealUpdateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { id } = req.params;
-    const existing = await pool.query('SELECT * FROM deals WHERE id = $1 AND organization_id = $2', [id, organizationId]);
-    if (existing.rows.length === 0) throw new AppError(404, 'Deal not found', ErrorCodes.NOT_FOUND);
-
     const payload = req.body as Record<string, unknown>;
-    const row = existing.rows[0];
-    const result = await pool.query(
-      `UPDATE deals SET title = COALESCE($2, title), value = $3, currency = $4, contact_id = $5,
-        owner_id = COALESCE($6, owner_id), probability = $7, expected_close_date = $8, comments = $9, updated_at = NOW()
-       WHERE id = $1 AND organization_id = $10 RETURNING *`,
-      [id, payload.title ?? row.title, payload.value !== undefined ? payload.value : row.value,
-       payload.currency !== undefined ? payload.currency : row.currency,
-       payload.contactId !== undefined ? payload.contactId : row.contact_id,
-       payload.ownerId ?? row.owner_id, payload.probability !== undefined ? payload.probability : row.probability,
-       payload.expectedCloseDate !== undefined ? payload.expectedCloseDate : row.expected_close_date,
-       payload.comments !== undefined ? payload.comments : row.comments, organizationId]
-    );
+
+    const updated = await withOrgContext(pool, organizationId, async (client) => {
+      const existing = await client.query('SELECT * FROM deals WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+      if (existing.rows.length === 0) throw new AppError(404, 'Deal not found', ErrorCodes.NOT_FOUND);
+      const row = existing.rows[0];
+      const result = await client.query(
+        `UPDATE deals SET title = COALESCE($2, title), value = $3, currency = $4, contact_id = $5,
+          owner_id = COALESCE($6, owner_id), probability = $7, expected_close_date = $8, comments = $9, updated_at = NOW()
+         WHERE id = $1 AND organization_id = $10 RETURNING *`,
+        [id, payload.title ?? row.title, payload.value !== undefined ? payload.value : row.value,
+         payload.currency !== undefined ? payload.currency : row.currency,
+         payload.contactId !== undefined ? payload.contactId : row.contact_id,
+         payload.ownerId ?? row.owner_id, payload.probability !== undefined ? payload.probability : row.probability,
+         payload.expectedCloseDate !== undefined ? payload.expectedCloseDate : row.expected_close_date,
+         payload.comments !== undefined ? payload.comments : row.comments, organizationId]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.DEAL_UPDATED, timestamp: new Date(),
-      organizationId, userId, data: { dealId: id },
+      organizationId, userId, correlationId: req.correlationId, data: { dealId: id },
     } as Event);
-    res.json(result.rows[0]);
+    res.json(updated);
   }));
 
   router.patch('/:id/stage', validate(DealStageUpdateSchema), asyncHandler(async (req, res) => {
@@ -224,7 +230,7 @@ export function dealsRouter({ pool, rabbitmq, log, dealCreatedTotal, dealStageCh
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.DEAL_STAGE_CHANGED, timestamp: new Date(),
-      organizationId, userId,
+      organizationId, userId, correlationId: req.correlationId,
       data: { dealId: id, fromStageId: deal.stage_id, toStageId: stageId, reason, autoMoved },
     } as Event);
 
@@ -333,13 +339,13 @@ async function createDealFromLead(p: CreateFromLeadParams) {
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.DEAL_CREATED, timestamp: new Date(),
-      organizationId: p.organizationId, userId: p.userId,
+      organizationId: p.organizationId, userId: p.userId, correlationId: p.correlationId,
       data: { dealId: deal.id, pipelineId: lead.pipeline_id, stageId, leadId: p.leadId },
     } as Event).catch((err) => log.warn({ message: 'Failed to publish deal.created', error: String(err) }));
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.LEAD_CONVERTED, timestamp: new Date(),
-      organizationId: p.organizationId, userId: p.userId,
+      organizationId: p.organizationId, userId: p.userId, correlationId: p.correlationId,
       data: { leadId: p.leadId, dealId: deal.id, pipelineId: lead.pipeline_id, convertedAt: new Date().toISOString() },
     } as Event).catch((err) => log.warn({ message: 'Failed to publish lead.converted', error: String(err) }));
 

@@ -10,12 +10,16 @@ export class AppError extends Error {
     Object.setPrototypeOf(this, AppError.prototype);
   }
 
-  toJSON() {
-    return {
+  /** S13: In production, omit validation/details from client response; details are logged server-side. */
+  toJSON(): { error: string; code?: string; details?: unknown } {
+    const payload: { error: string; code?: string; details?: unknown } = {
       error: this.message,
       code: this.code,
-      ...(this.details != null ? { details: this.details } : {}),
     };
+    if (this.details != null && process.env.NODE_ENV !== 'production') {
+      payload.details = this.details;
+    }
+    return payload;
   }
 }
 

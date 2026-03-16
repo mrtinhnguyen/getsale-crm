@@ -1,19 +1,21 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, canPermission, ServiceHttpClient, withOrgContext } from '@getsale/service-core';
 import type { PinnedChatRow, QueryParam } from '../types';
+import { runSyncListQuery, runDefaultChatsQuery } from '../chats-list-helpers';
 
 interface Deps {
   pool: Pool;
   log: Logger;
+  bdAccountsClient: ServiceHttpClient;
 }
 
-export function chatsRouter({ pool, log }: Deps): Router {
+export function chatsRouter({ pool, log, bdAccountsClient }: Deps): Router {
   const router = Router();
   const checkPermission = canPermission(pool);
 
-  // GET /chats — all chats (optionally filtered by bd_account_id)
+  // GET /chats — all chats (optionally filtered by bd_account_id). A1: when bdAccountId set, sync-chat list from bd-accounts internal API. A4: withOrgContext.
   router.get('/chats', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { channel, bdAccountId } = req.query;
@@ -21,179 +23,33 @@ export function chatsRouter({ pool, log }: Deps): Router {
     const orgId = organizationId;
     const params: QueryParam[] = [orgId];
 
+    const rows = await withOrgContext(pool, orgId, async (client) => {
     if (bdAccountId && String(bdAccountId).trim()) {
       if (channel && String(channel) !== 'telegram') {
-        return res.json([]);
+        return [] as { name?: string; channel_id?: string; peer_type?: string; account_name?: string }[];
       }
-      params.push(String(bdAccountId).trim());
+      const bdId = String(bdAccountId).trim();
 
-      const query = `
-        SELECT
-          'telegram' AS channel,
-          s.telegram_chat_id::text AS channel_id,
-          s.bd_account_id,
-          s.folder_id,
-          (SELECT COALESCE(array_agg(j.folder_id ORDER BY j.folder_id), ARRAY[]::integer[]) FROM bd_account_sync_chat_folders j WHERE j.bd_account_id = s.bd_account_id AND j.telegram_chat_id = s.telegram_chat_id) AS folder_ids,
-          msg.contact_id,
-          s.peer_type,
-          c.first_name,
-          c.last_name,
-          c.email,
-          c.telegram_id,
-          c.display_name,
-          c.username,
-          COALESCE(
-            CASE WHEN s.peer_type IN ('chat','channel') AND NULLIF(TRIM(COALESCE(s.title,'')),'') IS NOT NULL THEN NULLIF(TRIM(s.title),'') ELSE NULL END,
-            CASE WHEN s.peer_type IN ('chat','channel') AND NULLIF(TRIM(COALESCE(s.title,'')),'') IS NULL THEN 'Chat ' || s.telegram_chat_id::text ELSE NULL END,
-            CASE WHEN c.telegram_id IS DISTINCT FROM a.telegram_id THEN c.display_name ELSE NULL END,
-            CASE WHEN c.telegram_id IS DISTINCT FROM a.telegram_id
-                 AND NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), '') IS NOT NULL
-                 AND TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) NOT LIKE 'Telegram %'
-                 THEN TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) ELSE NULL END,
-            CASE WHEN c.telegram_id IS DISTINCT FROM a.telegram_id THEN c.username ELSE NULL END,
-            CASE WHEN NULLIF(TRIM(COALESCE(s.title, '')), '') IS NOT NULL
-                 AND (TRIM(COALESCE(s.title, '')) = NULLIF(TRIM(COALESCE(a.display_name, '')), '')
-                      OR TRIM(COALESCE(s.title, '')) = COALESCE(a.username, '')
-                      OR TRIM(COALESCE(s.title, '')) = NULLIF(TRIM(COALESCE(a.first_name, '')), ''))
-                 THEN NULL ELSE NULLIF(TRIM(COALESCE(s.title, '')), '') END,
-            c.telegram_id::text,
-            s.telegram_chat_id::text
-          ) AS name,
-          COALESCE(msg.unread_count, 0)::int AS unread_count,
-          msg.last_message_at,
-          msg.last_message,
-          conv.id AS conversation_id,
-          COALESCE(conv.lead_id, l.id) AS lead_id,
-          conv.campaign_id,
-          conv.became_lead_at,
-          conv.last_viewed_at,
-          st.name AS lead_stage_name,
-          p.name AS lead_pipeline_name,
-          COALESCE(NULLIF(TRIM(a.display_name), ''), a.username, a.phone_number, a.telegram_id::text) AS account_name,
-          s.title AS chat_title
-        FROM bd_account_sync_chats s
-        JOIN bd_accounts a ON a.id = s.bd_account_id AND a.organization_id = $1
-        LEFT JOIN LATERAL (
-          SELECT
-            (SELECT m0.contact_id FROM messages m0 WHERE m0.organization_id = a.organization_id AND m0.channel = 'telegram' AND m0.channel_id = s.telegram_chat_id::text AND m0.bd_account_id = s.bd_account_id ORDER BY COALESCE(m0.telegram_date, m0.created_at) DESC NULLS LAST LIMIT 1) AS contact_id,
-            (SELECT COUNT(*)::int FROM messages m WHERE m.organization_id = a.organization_id AND m.channel = 'telegram' AND m.channel_id = s.telegram_chat_id::text AND m.bd_account_id = s.bd_account_id AND m.unread = true) AS unread_count,
-            (SELECT MAX(COALESCE(m.telegram_date, m.created_at)) FROM messages m WHERE m.organization_id = a.organization_id AND m.channel = 'telegram' AND m.channel_id = s.telegram_chat_id::text AND m.bd_account_id = s.bd_account_id) AS last_message_at,
-            (SELECT COALESCE(NULLIF(TRIM(m2.content), ''), '[Media]') FROM messages m2 WHERE m2.organization_id = a.organization_id AND m2.channel = 'telegram' AND m2.channel_id = s.telegram_chat_id::text AND m2.bd_account_id = s.bd_account_id ORDER BY COALESCE(m2.telegram_date, m2.created_at) DESC LIMIT 1) AS last_message
-        ) msg ON true
-        LEFT JOIN contacts c ON c.id = msg.contact_id
-        LEFT JOIN conversations conv ON conv.organization_id = a.organization_id AND conv.bd_account_id = s.bd_account_id AND conv.channel = 'telegram' AND conv.channel_id = s.telegram_chat_id::text
-        LEFT JOIN LATERAL (
-          SELECT l0.id, l0.stage_id, l0.pipeline_id
-          FROM leads l0
-          WHERE l0.organization_id = a.organization_id
-            AND (l0.id = conv.lead_id OR (conv.lead_id IS NULL AND l0.contact_id = msg.contact_id))
-          ORDER BY CASE WHEN l0.id = conv.lead_id THEN 0 ELSE 1 END, l0.created_at DESC
-          LIMIT 1
-        ) l ON true
-        LEFT JOIN stages st ON st.id = l.stage_id
-        LEFT JOIN pipelines p ON p.id = l.pipeline_id
-        WHERE s.bd_account_id = $2 AND s.peer_type IN ('user', 'chat')
-        ORDER BY msg.last_message_at DESC NULLS LAST, s.telegram_chat_id
-      `;
-      const result = await pool.query(query, params);
-      const rows = result.rows as { name?: string; channel_id?: string; peer_type?: string; account_name?: string }[];
-      for (const r of rows) {
-        if (r.peer_type === 'user' && r.account_name && typeof r.name === 'string' && r.name.trim() === String(r.account_name).trim()) {
-          r.name = r.channel_id ?? r.name;
-        }
+      const { chats } = await bdAccountsClient.get<{ chats: Array<{ telegram_chat_id: string; title: string | null; peer_type: string; folder_id: number | null; folder_ids: number[] }> }>(
+        `/internal/sync-chats?bdAccountId=${encodeURIComponent(bdId)}`,
+        undefined,
+        { organizationId: orgId }
+      );
+      if (!chats?.length) {
+        return [] as { name?: string; channel_id?: string; peer_type?: string; account_name?: string }[];
       }
-      return res.json(rows);
+      const syncListJson = JSON.stringify(chats);
+      return runSyncListQuery(client, orgId, bdId, syncListJson);
     }
 
     if (channel) params.push(String(channel));
     const channelParam = channel ? ` AND m.channel = $${params.length}` : '';
-    let query = `
-      WITH latest_per_chat AS (
-        SELECT DISTINCT ON (m.organization_id, m.channel, m.channel_id, m.bd_account_id)
-          m.organization_id, m.channel, m.channel_id, m.bd_account_id, m.contact_id
-        FROM messages m
-        WHERE m.organization_id = $1${channelParam}
-        ORDER BY m.organization_id, m.channel, m.channel_id, m.bd_account_id, COALESCE(m.telegram_date, m.created_at) DESC NULLS LAST
-      ),
-      unread_per_chat AS (
-        SELECT m.organization_id, m.channel, m.channel_id, m.bd_account_id,
-               COUNT(*) FILTER (WHERE m.unread = true) AS unread_count
-        FROM messages m
-        WHERE m.organization_id = $1${channelParam}
-        GROUP BY m.organization_id, m.channel, m.channel_id, m.bd_account_id
-      )
-      SELECT
-        m.channel,
-        m.channel_id,
-        m.bd_account_id,
-        m.contact_id,
-        s.peer_type,
-        c.first_name,
-        c.last_name,
-        c.email,
-        c.telegram_id,
-        c.display_name,
-        c.username,
-        COALESCE(
-          CASE WHEN s.peer_type IN ('chat','channel') AND NULLIF(TRIM(COALESCE(s.title,'')),'') IS NOT NULL THEN NULLIF(TRIM(s.title),'') ELSE NULL END,
-          CASE WHEN s.peer_type IN ('chat','channel') AND NULLIF(TRIM(COALESCE(s.title,'')),'') IS NULL THEN 'Chat ' || m.channel_id ELSE NULL END,
-          CASE WHEN c.telegram_id IS DISTINCT FROM ba.telegram_id THEN c.display_name ELSE NULL END,
-          CASE WHEN c.telegram_id IS DISTINCT FROM ba.telegram_id
-               AND NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), '') IS NOT NULL
-               AND TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) NOT LIKE 'Telegram %'
-               THEN TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) ELSE NULL END,
-          CASE WHEN c.telegram_id IS DISTINCT FROM ba.telegram_id THEN c.username ELSE NULL END,
-          CASE WHEN NULLIF(TRIM(COALESCE(s.title, '')), '') IS NOT NULL
-               AND (TRIM(COALESCE(s.title, '')) = NULLIF(TRIM(COALESCE(ba.display_name, '')), '')
-                    OR TRIM(COALESCE(s.title, '')) = COALESCE(ba.username, '')
-                    OR TRIM(COALESCE(s.title, '')) = NULLIF(TRIM(COALESCE(ba.first_name, '')), ''))
-               THEN NULL ELSE NULLIF(TRIM(COALESCE(s.title, '')), '') END,
-          c.telegram_id::text,
-          m.channel_id
-        ) AS name,
-        COALESCE(u.unread_count, 0)::int AS unread_count,
-        (SELECT COALESCE(m2.telegram_date, m2.created_at) FROM messages m2 WHERE m2.organization_id = m.organization_id AND m2.channel = m.channel AND m2.channel_id = m.channel_id AND (m2.bd_account_id IS NOT DISTINCT FROM m.bd_account_id) ORDER BY COALESCE(m2.telegram_date, m2.created_at) DESC LIMIT 1) as last_message_at,
-        (SELECT COALESCE(NULLIF(TRIM(m2.content), ''), '[Media]') FROM messages m2 WHERE m2.organization_id = m.organization_id AND m2.channel = m.channel AND m2.channel_id = m.channel_id AND (m2.bd_account_id IS NOT DISTINCT FROM m.bd_account_id) ORDER BY COALESCE(m2.telegram_date, m2.created_at) DESC LIMIT 1) as last_message,
-        conv.id AS conversation_id,
-        COALESCE(conv.lead_id, l.id) AS lead_id,
-        conv.campaign_id,
-        conv.became_lead_at,
-        conv.last_viewed_at,
-        st.name AS lead_stage_name,
-        p.name AS lead_pipeline_name,
-        COALESCE(NULLIF(TRIM(ba.display_name), ''), ba.username, ba.phone_number, ba.telegram_id::text) AS account_name,
-        s.title AS chat_title
-      FROM latest_per_chat m
-      LEFT JOIN contacts c ON c.id = m.contact_id
-      LEFT JOIN unread_per_chat u ON u.organization_id = m.organization_id AND u.channel = m.channel AND u.channel_id = m.channel_id AND u.bd_account_id = m.bd_account_id
-      LEFT JOIN bd_account_sync_chats s ON s.bd_account_id = m.bd_account_id AND s.telegram_chat_id = m.channel_id
-      LEFT JOIN bd_accounts ba ON ba.id = m.bd_account_id
-      LEFT JOIN conversations conv ON conv.organization_id = m.organization_id AND conv.bd_account_id IS NOT DISTINCT FROM m.bd_account_id AND conv.channel = m.channel AND conv.channel_id = m.channel_id
-      LEFT JOIN LATERAL (
-        SELECT l0.id, l0.stage_id, l0.pipeline_id
-        FROM leads l0
-        WHERE l0.organization_id = m.organization_id
-          AND (l0.id = conv.lead_id OR (conv.lead_id IS NULL AND l0.contact_id = m.contact_id))
-        ORDER BY CASE WHEN l0.id = conv.lead_id THEN 0 ELSE 1 END, l0.created_at DESC
-        LIMIT 1
-      ) l ON true
-      LEFT JOIN stages st ON st.id = l.stage_id
-      LEFT JOIN pipelines p ON p.id = l.pipeline_id
-      WHERE m.organization_id = $1${channelParam}
-      ORDER BY last_message_at DESC NULLS LAST
-    `;
-
-    const result = await pool.query(query, params);
-    const rows = result.rows as { name?: string; channel_id?: string; peer_type?: string; account_name?: string }[];
-    for (const r of rows) {
-      if (r.peer_type === 'user' && r.account_name && typeof r.name === 'string' && r.name.trim() === String(r.account_name).trim()) {
-        r.name = r.channel_id ?? r.name;
-      }
-    }
+    return runDefaultChatsQuery(client, params as (string | number)[], channelParam);
+    });
     res.json(rows);
   }));
 
-  // GET /search — search chats by name
+  // GET /search — search chats by name. A4: withOrgContext.
   router.get('/search', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
@@ -202,7 +58,8 @@ export function chatsRouter({ pool, log }: Deps): Router {
       return res.json({ items: [] });
     }
     const searchPattern = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-    const result = await pool.query(
+    const items = await withOrgContext(pool, organizationId, async (client) => {
+    const result = await client.query(
       `SELECT
         'telegram' AS channel,
         s.telegram_chat_id::text AS channel_id,
@@ -238,7 +95,9 @@ export function chatsRouter({ pool, log }: Deps): Router {
        LIMIT $3`,
       [organizationId, searchPattern, limit]
     );
-    res.json({ items: result.rows });
+    return result.rows;
+    });
+    res.json({ items });
   }));
 
   // GET /stats — messaging statistics

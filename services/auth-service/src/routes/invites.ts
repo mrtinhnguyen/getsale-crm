@@ -1,9 +1,22 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
+import { z } from 'zod';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
 import { extractBearerToken } from '../helpers';
 import { AUTH_COOKIE_ACCESS } from '../cookies';
+
+const InviteTokenParamSchema = z.object({
+  token: z.string().min(1, 'Token is required').max(512).regex(/^[a-zA-Z0-9_-]+$/, 'Invalid token format'),
+});
+
+function parseInviteToken(params: { token?: string }): string {
+  const parsed = InviteTokenParamSchema.safeParse(params);
+  if (!parsed.success) {
+    throw new AppError(400, 'Invalid invite token format', ErrorCodes.BAD_REQUEST);
+  }
+  return parsed.data.token;
+}
 
 interface Deps {
   pool: Pool;
@@ -15,7 +28,7 @@ export function invitesRouter({ pool }: Deps): Router {
 
   // Public: invite info
   router.get('/:token', asyncHandler(async (req, res) => {
-    const { token } = req.params;
+    const token = parseInviteToken(req.params);
     const inv = await pool.query(
       `SELECT i.organization_id AS "organizationId", i.role, i.expires_at AS "expiresAt", o.name AS "organizationName"
        FROM organization_invite_links i
@@ -41,7 +54,7 @@ export function invitesRouter({ pool }: Deps): Router {
     const userResult = await pool.query('SELECT id FROM users WHERE id = $1', [decoded.userId]);
     if (userResult.rows.length === 0) throw new AppError(401, 'User not found', ErrorCodes.UNAUTHORIZED);
 
-    const { token: inviteToken } = req.params;
+    const inviteToken = parseInviteToken(req.params);
     const inv = await pool.query(
       'SELECT organization_id, role, expires_at FROM organization_invite_links WHERE token = $1',
       [inviteToken]

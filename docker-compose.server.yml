@@ -266,6 +266,7 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:5432/postgres
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - RABBITMQ_URL=amqp://getsale:${RABBITMQ_PASSWORD:-set_me_in_env}@rabbitmq:5672
+      - MESSAGING_SERVICE_URL=http://messaging-service:3003
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}

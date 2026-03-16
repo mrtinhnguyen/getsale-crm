@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
+import { z } from 'zod';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, requireUser, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, requireUser, AppError, ErrorCodes, validate } from '@getsale/service-core';
+
+const AssignClientSchema = z.object({
+  teamId: z.string().uuid(),
+  clientId: z.string().uuid(),
+  assignedTo: z.string().uuid(),
+});
 
 interface Deps {
   pool: Pool;
@@ -12,13 +19,9 @@ export function clientsRouter({ pool }: Deps): Router {
   const router = Router();
   router.use(requireUser());
 
-  router.post('/assign', asyncHandler(async (req, res) => {
+  router.post('/assign', validate(AssignClientSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { teamId, clientId, assignedTo } = req.body;
-
-    if (!teamId || !clientId || !assignedTo) {
-      throw new AppError(400, 'teamId, clientId and assignedTo are required', ErrorCodes.BAD_REQUEST);
-    }
 
     const result = await pool.query(
       `INSERT INTO team_client_assignments (team_id, client_id, assigned_to)

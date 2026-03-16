@@ -366,6 +366,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev}@redis:6379
       - RABBITMQ_URL=amqp://getsale:getsale_dev@rabbitmq:5672
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
+      - MESSAGING_SERVICE_URL=http://messaging-service:3003
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
       - SESSION_ENCRYPTION_KEY=${SESSION_ENCRYPTION_KEY:-dev_session_encryption_key_change_in_production}

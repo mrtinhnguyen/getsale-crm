@@ -37,7 +37,7 @@ docker-compose down -v
 
 ```env
 # Обязательно для работы gateway и бэкендов: один и тот же секрет для внутренней аутентификации запросов gateway → backend.
-# Если не задан, бэкенды отвечают 503 (см. аудит S1).
+# Если не задан, бэкенды отвечают 503 (см. аудит S1). В production запрещено использовать значение по умолчанию (api-gateway не запустится).
 INTERNAL_AUTH_SECRET=your_internal_auth_secret
 
 OPENAI_API_KEY=your_openai_key
@@ -46,6 +46,27 @@ TELEGRAM_BOT_TOKEN=your_telegram_token
 TELEGRAM_API_ID=12345
 TELEGRAM_API_HASH=your_api_hash
 ```
+
+### Безопасность: gateway и бэкенды
+
+- **INTERNAL_AUTH_SECRET:** Должен быть задан одним и тем же значением для API Gateway и всех бэкенд-сервисов. В production API Gateway при старте проверяет, что переменная задана и не равна значению по умолчанию `dev_internal_auth_secret` — иначе процесс завершается с ошибкой. В dev и staging также задайте непустой и не дефолтный секрет, если бэкенды доступны с других машин или по сети — иначе internal-маршруты останутся без проверки (аудит S3).
+- **Прямой доступ к бэкендам запрещён:** К бэкенд-сервисам (auth, crm, pipeline, messaging, bd-accounts, campaign, automation, ai, user, team, analytics, activity) не должен быть доступ из интернета. Единственная точка входа для клиентских запросов — API Gateway. Бэкенды доверяют заголовкам `X-User-Id`, `X-Organization-Id`, `X-User-Role` только при наличии валидного заголовка `X-Internal-Auth` (INTERNAL_AUTH_SECRET). Если бэкенд окажется доступен напрямую, злоумышленник при компрометации или отсутствии секрета сможет подделать контекст пользователя. В продакшене бэкенды должны слушать только внутреннюю сеть (например, Kubernetes cluster IP или private subnet).
+
+Подробнее о контрактах между сервисами: [INTERNAL_API.md](INTERNAL_API.md).
+
+## Чек-лист перед выходом в прод
+
+Перед первым деплоем в production убедитесь:
+
+1. **Сборка:** Все сервисы пересобраны (`npm run build` в корне или через CI). В деплое не должны использоваться устаревшие `dist/` (например, с устаревшей логикой в bd-accounts).
+2. **Переменные окружения (production):**
+   - `JWT_SECRET` — задан и надёжный (не дефолтное значение).
+   - `INTERNAL_AUTH_SECRET` — задан и **не** равен `dev_internal_auth_secret` (иначе API Gateway не запустится).
+   - `CORS_ORIGIN` — задан списком разрешённых фронтовых доменов (в production обязателен).
+3. **Сеть:** Бэкенды (auth, crm, messaging, bd-accounts, pipeline, campaign, automation, ai, user, team, analytics, activity) не открыты в интернет; единственная точка входа для клиентов — API Gateway; бэкенды доступны только из внутренней сети.
+4. **Один и тот же INTERNAL_AUTH_SECRET** у API Gateway и всех бэкендов (как описано выше в разделе «Безопасность»).
+
+После выполнения пунктов выше выход в прод по текущему аудиту допустим.
 
 ## Продакшн (Kubernetes)
 

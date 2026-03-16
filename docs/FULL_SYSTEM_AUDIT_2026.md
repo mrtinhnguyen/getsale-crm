@@ -2,6 +2,8 @@
 
 Независимый технический и продуктовый аудит CRM: архитектура, фронт/UX, AI, масштабируемость, governance, конкуренты. Оценка «как есть», без допущения будущих исправлений.
 
+**Технические код-аудиты и remediation:** см. [ai_docs/develop/audits/](../ai_docs/develop/audits/) — последний отчёт: [2026-03-18-full-system-audit.md](../ai_docs/develop/audits/2026-03-18-full-system-audit.md).
+
 **Дата:** 2026-03  
 **Связанный отчёт:** [PROJECT_AUDIT_REPORT.md](PROJECT_AUDIT_REPORT.md)
 
@@ -136,3 +138,11 @@
    - **Среднесрочно:** Scale infrastructure — стратегия партиционирования/архивов для `messages`, проверка нагрузки на 10k conversations, при необходимости read replicas.
    - **Параллельно:** Product refinement — унификация документации (выполнена в 2026), глоссарий, приоритизация недостающих CRUD/валидаций по STATE_AND_ROADMAP.
    - **Далее:** AI expansion — учёт токенов, возможность смены моделей и A/B, сохранение контекста AI не только в localStorage.
+
+---
+
+## Remediation status (2026-03-15)
+
+По результатам аудита проведена поэтапная ремедиация: добавлены `/ready`, метрики сбоев публикации в RabbitMQ, JWT algorithm, CSP, Zod на множестве эндпоинтов (auth, campaign, pipeline, bd-accounts, crm, team, ai, user), RLS через `withOrgContext` (companies, contacts, notes, reminders, deals), проброс `correlationId` в события, рефакторинг bd-accounts (useBdAccountsConnect, ConnectModal), Sentry на фронте и др.
+
+**Детальный статус «сделано / не сделано»:** [REMEDIATION_STATUS_2026-03-15.md](REMEDIATION_STATUS_2026-03-15.md)

@@ -7,6 +7,7 @@ import {
 } from '@getsale/events';
 import { MessageChannel, MessageDirection, MessageStatus } from '@getsale/types';
 import { serializeMessage, getMessageText, type SerializedTelegramMessage } from '../telegram-serialize';
+import { getErrorMessage } from '../helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 import type { ContactManager } from './contact-manager';
 import type { MessageDb } from './message-db';
@@ -119,8 +120,8 @@ export class MessageHandler {
       };
       await this.rabbitmq.publishEvent(event);
       this.log.info({ message: `Short message saved and event published, messageId=${savedMessage.id}, channelId=${chatId}` });
-    } catch (error: any) {
-      this.log.error({ message: `Error handling short message`, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.error({ message: `Error handling short message`, error: getErrorMessage(error) });
     }
   }
 
@@ -175,9 +176,10 @@ export class MessageHandler {
                 username: (u.username ?? '').trim() || null,
               });
             }
-          } catch (e: any) {
-            if (e?.message !== 'TIMEOUT' && !e?.message?.includes('Could not find')) {
-              this.log.warn({ message: "getEntity for contact enrichment", error: e?.message });
+          } catch (e: unknown) {
+            const msg = getErrorMessage(e);
+            if (msg !== 'TIMEOUT' && !msg.includes('Could not find')) {
+              this.log.warn({ message: "getEntity for contact enrichment", error: msg });
             }
           }
         }
@@ -232,8 +234,8 @@ export class MessageHandler {
       };
       await this.rabbitmq.publishEvent(event);
       this.log.info({ message: `MessageReceivedEvent published, messageId=${savedMessage.id}, channelId=${chatId}` });
-    } catch (error: any) {
-      this.log.error({ message: `Error handling new message`, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.error({ message: `Error handling new message`, error: getErrorMessage(error) });
     }
   }
 }

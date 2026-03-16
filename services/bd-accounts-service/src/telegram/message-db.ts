@@ -1,16 +1,19 @@
 // @ts-nocheck — GramJS types are incomplete
 import type { Pool } from 'pg';
+import type { ServiceHttpClient } from '@getsale/service-core';
 import type { SerializedTelegramMessage } from '../telegram-serialize';
 import { reactionsFromTelegramExtra, ourReactionsFromTelegramExtra } from './helpers';
 import type { StructuredLog } from './types';
 
 /**
  * DB operations for conversations and messages.
+ * When messagingClient is set, conversation and message persistence go through messaging-service internal API (A1: single owner for messages/conversations).
  */
 export class MessageDb {
   constructor(
     private readonly pool: Pool,
-    private readonly log: StructuredLog
+    private readonly log: StructuredLog,
+    private readonly messagingClient?: ServiceHttpClient | null
   ) {}
 
   async ensureConversation(params: {
@@ -20,6 +23,21 @@ export class MessageDb {
     channelId: string;
     contactId: string | null;
   }): Promise<void> {
+    if (this.messagingClient) {
+      await this.messagingClient.post(
+        '/internal/conversations/ensure',
+        {
+          organizationId: params.organizationId,
+          bdAccountId: params.bdAccountId,
+          channel: params.channel,
+          channelId: params.channelId,
+          contactId: params.contactId,
+        },
+        undefined,
+        { organizationId: params.organizationId }
+      );
+      return;
+    }
     await this.pool.query(
       `INSERT INTO conversations (id, organization_id, bd_account_id, channel, channel_id, contact_id, created_at, updated_at)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), NOW())
@@ -53,6 +71,40 @@ export class MessageDb {
       serialized,
       metadata = {},
     } = params;
+
+    if (this.messagingClient) {
+      await this.ensureConversation({ organizationId, bdAccountId, channel, channelId, contactId });
+      const reactionsFromTg = reactionsFromTelegramExtra(serialized.telegram_extra);
+      const ourReactionsFromTg = ourReactionsFromTelegramExtra(serialized.telegram_extra);
+      const res = await this.messagingClient.post<{ id: string }>(
+        '/internal/messages',
+        {
+          organizationId,
+          bdAccountId,
+          contactId,
+          channel,
+          channelId,
+          direction,
+          status,
+          unread,
+          serialized: {
+            telegram_message_id: serialized.telegram_message_id ?? null,
+            telegram_date: serialized.telegram_date ?? null,
+            content: serialized.content ?? '',
+            telegram_entities: serialized.telegram_entities ?? null,
+            telegram_media: serialized.telegram_media ?? null,
+            reply_to_telegram_id: serialized.reply_to_telegram_id ?? null,
+            telegram_extra: serialized.telegram_extra ?? {},
+          },
+          metadata,
+          reactions: reactionsFromTg ?? undefined,
+          our_reactions: ourReactionsFromTg?.length ? ourReactionsFromTg : undefined,
+        },
+        undefined,
+        { organizationId }
+      );
+      return { id: res.id };
+    }
 
     await this.ensureConversation({ organizationId, bdAccountId, channel, channelId, contactId });
 
@@ -130,5 +182,81 @@ export class MessageDb {
       [accountId, telegramChatId]
     );
     return result.rows.length > 0;
+  }
+
+  /** A1 Stage 2: delete messages by Telegram ids via messaging-service or direct DB. S4: pass organizationId for X-Organization-Id. */
+  async deleteByTelegram(params: {
+    bdAccountId: string;
+    organizationId: string;
+    channelId?: string;
+    telegramMessageIds: number[];
+  }): Promise<Array<{ id: string; organization_id: string; channel_id: string; telegram_message_id: number }>> {
+    const { bdAccountId, organizationId, channelId, telegramMessageIds } = params;
+    if (this.messagingClient) {
+      const res = await this.messagingClient.post<{ deleted: Array<{ id: string; organization_id: string; channel_id: string; telegram_message_id: number }> }>(
+        '/internal/messages/delete-by-telegram',
+        { bdAccountId, channelId, telegramMessageIds },
+        undefined,
+        { organizationId }
+      );
+      return res.deleted ?? [];
+    }
+    const result =
+      channelId != null
+        ? await this.pool.query(
+            `DELETE FROM messages WHERE bd_account_id = $1 AND channel_id = $2 AND telegram_message_id = ANY($3::bigint[])
+             RETURNING id, organization_id, channel_id, telegram_message_id`,
+            [bdAccountId, channelId, telegramMessageIds]
+          )
+        : await this.pool.query(
+            `DELETE FROM messages WHERE bd_account_id = $1 AND telegram_message_id = ANY($2::bigint[])
+             RETURNING id, organization_id, channel_id, telegram_message_id`,
+            [bdAccountId, telegramMessageIds]
+          );
+    return result.rows as Array<{ id: string; organization_id: string; channel_id: string; telegram_message_id: number }>;
+  }
+
+  /** A1 Stage 2: edit message by Telegram id via messaging-service or direct DB. S4: pass organizationId for X-Organization-Id. */
+  async editByTelegram(params: {
+    bdAccountId: string;
+    organizationId: string;
+    channelId: string;
+    telegramMessageId: number;
+    content: string;
+    telegram_entities?: unknown;
+    telegram_media?: unknown;
+  }): Promise<{ id: string; organization_id: string } | null> {
+    const { bdAccountId, organizationId, channelId, telegramMessageId, content, telegram_entities, telegram_media } = params;
+    if (this.messagingClient) {
+      try {
+        const res = await this.messagingClient.patch<{ id: string; organization_id: string }>(
+          '/internal/messages/edit-by-telegram',
+          { bdAccountId, channelId, telegramMessageId, content, telegram_entities, telegram_media },
+          undefined,
+          { organizationId }
+        );
+        return res;
+      } catch (err: unknown) {
+        const code = typeof (err as { statusCode?: number }).statusCode === 'number' ? (err as { statusCode: number }).statusCode : 0;
+        if (code === 404) return null;
+        throw err;
+      }
+    }
+    const result = await this.pool.query(
+      `UPDATE messages SET content = $1, updated_at = NOW(), telegram_entities = $2, telegram_media = $3
+       WHERE bd_account_id = $4 AND channel_id = $5 AND telegram_message_id = $6
+       RETURNING id, organization_id`,
+      [
+        content,
+        telegram_entities != null ? JSON.stringify(telegram_entities) : null,
+        telegram_media != null ? JSON.stringify(telegram_media) : null,
+        bdAccountId,
+        channelId,
+        telegramMessageId,
+      ]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0] as { id: string; organization_id: string };
+    return { id: row.id, organization_id: row.organization_id };
   }
 }

@@ -1,12 +1,22 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, canPermission, parseLimit } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, canPermission, parseLimit, validate } from '@getsale/service-core';
+import { z } from 'zod';
 import { extractBearerToken, auditLog, resolveRole, getClientIp } from '../helpers';
 import { AUTH_COOKIE_ACCESS } from '../cookies';
 
 const ORG_NAME_MAX_LEN = 200;
 const ORG_SLUG_MAX_LEN = 100;
+
+const OrgUpdateSchema = z.object({
+  name: z.string().max(ORG_NAME_MAX_LEN).trim().optional(),
+  slug: z.string().max(ORG_SLUG_MAX_LEN).trim().optional(),
+}).refine((d) => (d.name != null && d.name.length > 0) || (d.slug != null && d.slug.length > 0), { message: 'At least one of name or slug is required and non-empty' });
+
+const TransferOwnershipSchema = z.object({
+  newOwnerUserId: z.string().uuid(),
+});
 
 interface Deps {
   pool: Pool;
@@ -25,7 +35,7 @@ export function organizationRouter({ pool, log }: Deps): Router {
     res.json(rows.rows[0]);
   }));
 
-  router.patch('/organization', asyncHandler(async (req, res) => {
+  router.patch('/organization', validate(OrgUpdateSchema), asyncHandler(async (req, res) => {
     const decoded = extractBearerToken(req, tokenFromReq(req));
     const role = await resolveRole(pool, decoded.userId, decoded.organizationId, decoded.role);
     const canUpdate = await checkPermission(role, 'workspace', 'update');
@@ -36,15 +46,13 @@ export function organizationRouter({ pool, log }: Deps): Router {
     const values: unknown[] = [];
     let i = 1;
 
-    if (name !== undefined && typeof name === 'string' && name.trim()) {
+    if (name !== undefined && name.trim()) {
       const nameVal = name.trim().slice(0, ORG_NAME_MAX_LEN);
-      if (name.trim().length > ORG_NAME_MAX_LEN) throw new AppError(400, `Organization name must be at most ${ORG_NAME_MAX_LEN} characters`, ErrorCodes.VALIDATION);
       updates.push(`name = $${i++}`);
       values.push(nameVal);
     }
-    if (slug !== undefined && typeof slug === 'string' && slug.trim()) {
+    if (slug !== undefined && slug.trim()) {
       const slugNormalized = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, ORG_SLUG_MAX_LEN);
-      if (slug.trim().length > ORG_SLUG_MAX_LEN) throw new AppError(400, `URL slug must be at most ${ORG_SLUG_MAX_LEN} characters`, ErrorCodes.VALIDATION);
       const existing = await pool.query('SELECT id FROM organizations WHERE slug = $1 AND id != $2', [slugNormalized, decoded.organizationId]);
       if (existing.rows.length > 0) throw new AppError(409, 'This URL slug is already taken', ErrorCodes.CONFLICT);
       updates.push(`slug = $${i++}`);
@@ -69,19 +77,16 @@ export function organizationRouter({ pool, log }: Deps): Router {
     res.json(rows.rows[0]);
   }));
 
-  router.post('/organization/transfer-ownership', asyncHandler(async (req, res) => {
+  router.post('/organization/transfer-ownership', validate(TransferOwnershipSchema), asyncHandler(async (req, res) => {
     const decoded = extractBearerToken(req, tokenFromReq(req));
     const role = await resolveRole(pool, decoded.userId, decoded.organizationId, decoded.role);
     if (role.toLowerCase() !== 'owner') throw new AppError(403, 'Only the current owner can transfer ownership', ErrorCodes.FORBIDDEN);
 
-    const { newOwnerUserId } = req.body;
-    if (!newOwnerUserId || typeof newOwnerUserId !== 'string') throw new AppError(400, 'newOwnerUserId is required', ErrorCodes.BAD_REQUEST);
+    const { newOwnerUserId: newOwnerId } = req.body;
 
-    const target = await pool.query('SELECT 1 FROM organization_members WHERE user_id = $1 AND organization_id = $2', [newOwnerUserId.trim(), decoded.organizationId]);
+    const target = await pool.query('SELECT 1 FROM organization_members WHERE user_id = $1 AND organization_id = $2', [newOwnerId, decoded.organizationId]);
     if (target.rows.length === 0) throw new AppError(404, 'User is not a member of this organization', ErrorCodes.NOT_FOUND);
-    if (newOwnerUserId.trim() === decoded.userId) throw new AppError(400, 'Cannot transfer to yourself', ErrorCodes.BAD_REQUEST);
-
-    const newOwnerId = newOwnerUserId.trim();
+    if (newOwnerId === decoded.userId) throw new AppError(400, 'Cannot transfer to yourself', ErrorCodes.BAD_REQUEST);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes, canPermission } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, canPermission, validate, withOrgContext } from '@getsale/service-core';
 import { TelegramManager, type ResolvedSource } from '../telegram';
 import {
   getAccountOr404,
@@ -11,7 +11,19 @@ import {
   isAccountOwnerName,
   ensureFoldersFromSyncChats,
   SYNC_STALE_MINUTES,
+  getErrorCode,
+  getErrorMessage,
 } from '../helpers';
+import {
+  SyncChatsBodySchema,
+  SyncFoldersOrderSchema,
+  SyncFolderCustomSchema,
+  SyncFolderPatchSchema,
+  ResolveChatsSchema,
+  ParseResolveSchema,
+  ChatFolderPatchSchema,
+  SyncFoldersBodySchema,
+} from './sync-schemas';
 
 interface Deps {
   pool: Pool;
@@ -210,8 +222,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
           icon: f.emoticon ?? null,
         }));
         return res.json(rows);
-      } catch (err: any) {
-        log.warn({ message: 'Initial folders fetch from Telegram failed', error: err?.message, entity_id: id });
+      } catch (err: unknown) {
+        log.warn({ message: 'Initial folders fetch from Telegram failed', error: getErrorMessage(err), entity_id: id });
       }
     }
     res.json(result.rows);
@@ -233,8 +245,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     res.json({ folders, success: true });
   }));
 
-  // POST /:id/sync-folders — save selected folders + extra chats
-  router.post('/:id/sync-folders', asyncHandler(async (req, res) => {
+  // POST /:id/sync-folders — save selected folders + extra chats (S10/A4: withOrgContext)
+  router.post('/:id/sync-folders', validate(SyncFoldersBodySchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
     const { folders, extraChats } = req.body;
@@ -245,71 +257,72 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     if (!isOwner) {
       throw new AppError(403, 'Only the account owner can change sync folders', ErrorCodes.FORBIDDEN);
     }
-    if (!Array.isArray(folders)) {
-      throw new AppError(400, 'folders must be an array', ErrorCodes.VALIDATION);
-    }
 
-    await pool.query('DELETE FROM bd_account_sync_folders WHERE bd_account_id = $1', [id]);
-    for (let i = 0; i < folders.length; i++) {
-      const f = folders[i];
-      const folderId = Number(f.folderId ?? f.folder_id ?? 0);
-      const title = String(f.folderTitle ?? f.folder_title ?? '').trim() || `Папка ${folderId}`;
-      const isUserCreated = Boolean(f.is_user_created ?? f.isUserCreated ?? false);
-      const icon = f.icon != null && String(f.icon).trim() ? String(f.icon).trim().slice(0, 20) : null;
-      await pool.query(
-        `INSERT INTO bd_account_sync_folders (bd_account_id, folder_id, folder_title, order_index, is_user_created, icon)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [id, folderId, title, i, isUserCreated, icon]
-      );
-    }
-
-    if (Array.isArray(extraChats) && extraChats.length > 0) {
-      const accountRow = (await pool.query('SELECT display_name, username, first_name FROM bd_accounts WHERE id = $1 LIMIT 1', [id])).rows[0] as { display_name?: string | null; username?: string | null; first_name?: string | null } | undefined;
-      for (const c of extraChats) {
-        const chatId = String(c.id ?? c.telegram_chat_id ?? '').trim();
-        if (!chatId) continue;
-        let title = (c.name ?? c.title ?? '').trim() || chatId;
-        if (accountRow && isAccountOwnerName(accountRow, title)) title = chatId;
-        const folderId = c.folderId !== undefined && c.folderId !== null ? Number(c.folderId) : null;
-        let peerType = 'user';
-        if (c.isChannel) peerType = 'channel';
-        else if (c.isGroup) peerType = 'chat';
-        await pool.query(
-          `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
-           VALUES ($1, $2, $3, $4, false, $5)
-           ON CONFLICT (bd_account_id, telegram_chat_id) DO UPDATE SET
-             title = CASE WHEN EXISTS (
-               SELECT 1 FROM bd_accounts a WHERE a.id = EXCLUDED.bd_account_id
-                 AND (NULLIF(TRIM(COALESCE(a.display_name, '')), '') = TRIM(EXCLUDED.title)
-                   OR a.username = TRIM(EXCLUDED.title)
-                   OR NULLIF(TRIM(COALESCE(a.first_name, '')), '') = TRIM(EXCLUDED.title))
-             ) THEN bd_account_sync_chats.telegram_chat_id::text ELSE EXCLUDED.title END,
-             peer_type = EXCLUDED.peer_type,
-             folder_id = EXCLUDED.folder_id`,
-          [id, chatId, title, peerType, folderId]
+    const result = await withOrgContext(pool, user.organizationId, async (client) => {
+      await client.query('DELETE FROM bd_account_sync_folders WHERE bd_account_id = $1', [id]);
+      for (let i = 0; i < folders.length; i++) {
+        const f = folders[i];
+        const folderId = Number(f.folderId ?? f.folder_id ?? 0);
+        const title = String(f.folderTitle ?? f.folder_title ?? '').trim() || `Папка ${folderId}`;
+        const isUserCreated = Boolean(f.is_user_created ?? f.isUserCreated ?? false);
+        const icon = f.icon != null && String(f.icon).trim() ? String(f.icon).trim().slice(0, 20) : null;
+        await client.query(
+          `INSERT INTO bd_account_sync_folders (bd_account_id, folder_id, folder_title, order_index, is_user_created, icon)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [id, folderId, title, i, isUserCreated, icon]
         );
-        if (folderId != null) {
-          await pool.query(
-            `INSERT INTO bd_account_sync_chat_folders (bd_account_id, telegram_chat_id, folder_id)
-             VALUES ($1, $2, $3) ON CONFLICT (bd_account_id, telegram_chat_id, folder_id) DO NOTHING`,
-            [id, chatId, folderId]
+      }
+
+      if (Array.isArray(extraChats) && extraChats.length > 0) {
+        const accountRow = (await client.query('SELECT display_name, username, first_name FROM bd_accounts WHERE id = $1 LIMIT 1', [id])).rows[0] as { display_name?: string | null; username?: string | null; first_name?: string | null } | undefined;
+        for (const c of extraChats) {
+          const chatId = String(c.id ?? c.telegram_chat_id ?? '').trim();
+          if (!chatId) continue;
+          let chatTitle = (c.name ?? c.title ?? '').trim() || chatId;
+          if (accountRow && isAccountOwnerName(accountRow, chatTitle)) chatTitle = chatId;
+          const folderId = c.folderId !== undefined && c.folderId !== null ? Number(c.folderId) : null;
+          let peerType = 'user';
+          if (c.isChannel) peerType = 'channel';
+          else if (c.isGroup) peerType = 'chat';
+          await client.query(
+            `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
+             VALUES ($1, $2, $3, $4, false, $5)
+             ON CONFLICT (bd_account_id, telegram_chat_id) DO UPDATE SET
+               title = CASE WHEN EXISTS (
+                 SELECT 1 FROM bd_accounts a WHERE a.id = EXCLUDED.bd_account_id
+                   AND (NULLIF(TRIM(COALESCE(a.display_name, '')), '') = TRIM(EXCLUDED.title)
+                     OR a.username = TRIM(EXCLUDED.title)
+                     OR NULLIF(TRIM(COALESCE(a.first_name, '')), '') = TRIM(EXCLUDED.title))
+               ) THEN bd_account_sync_chats.telegram_chat_id::text ELSE EXCLUDED.title END,
+               peer_type = EXCLUDED.peer_type,
+               folder_id = EXCLUDED.folder_id`,
+            [id, chatId, chatTitle, peerType, folderId]
           );
+          if (folderId != null) {
+            await client.query(
+              `INSERT INTO bd_account_sync_chat_folders (bd_account_id, telegram_chat_id, folder_id)
+               VALUES ($1, $2, $3) ON CONFLICT (bd_account_id, telegram_chat_id, folder_id) DO NOTHING`,
+              [id, chatId, folderId]
+            );
+          }
         }
       }
-    }
 
-    const result = await pool.query(
-      'SELECT id, folder_id, folder_title, order_index, COALESCE(is_user_created, false) AS is_user_created, icon FROM bd_account_sync_folders WHERE bd_account_id = $1 ORDER BY order_index',
-      [id]
-    );
+      return client.query(
+        'SELECT id, folder_id, folder_title, order_index, COALESCE(is_user_created, false) AS is_user_created, icon FROM bd_account_sync_folders WHERE bd_account_id = $1 ORDER BY order_index',
+        [id]
+      );
+    });
     res.json(result.rows);
   }));
 
   // POST /:id/sync-folders/custom — create user-created folder
-  router.post('/:id/sync-folders/custom', asyncHandler(async (req, res) => {
+  router.post('/:id/sync-folders/custom', validate(SyncFolderCustomSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
-    const { folder_title: folderTitle, icon } = req.body;
+    const body = req.body as { folder_title?: string; icon?: string | null };
+    const folderTitle = body.folder_title;
+    const icon = body.icon;
 
     await getAccountOr404(pool, id, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, id, user);
@@ -319,27 +332,29 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     }
     const title = (folderTitle != null ? String(folderTitle).trim() : '').slice(0, 12) || 'New folder';
     const iconVal = icon != null && String(icon).trim() ? String(icon).trim().slice(0, 20) : null;
-    const maxRow = await pool.query(
-      'SELECT COALESCE(MAX(folder_id), 1) AS max_id FROM bd_account_sync_folders WHERE bd_account_id = $1',
-      [id]
-    );
-    const nextFolderId = Math.max(2, (Number(maxRow.rows[0]?.max_id) || 1) + 1);
-    const countRow = await pool.query(
-      'SELECT COUNT(*) AS c FROM bd_account_sync_folders WHERE bd_account_id = $1',
-      [id]
-    );
-    const orderIndex = Number(countRow.rows[0]?.c) || 0;
-    const insert = await pool.query(
-      `INSERT INTO bd_account_sync_folders (bd_account_id, folder_id, folder_title, order_index, is_user_created, icon)
-       VALUES ($1, $2, $3, $4, true, $5)
-       RETURNING id, folder_id, folder_title, order_index, is_user_created, icon`,
-      [id, nextFolderId, title, orderIndex, iconVal]
-    );
+    const insert = await withOrgContext(pool, user.organizationId, async (client) => {
+      const maxRow = await client.query(
+        'SELECT COALESCE(MAX(folder_id), 1) AS max_id FROM bd_account_sync_folders WHERE bd_account_id = $1',
+        [id]
+      );
+      const nextFolderId = Math.max(2, (Number(maxRow.rows[0]?.max_id) || 1) + 1);
+      const countRow = await client.query(
+        'SELECT COUNT(*) AS c FROM bd_account_sync_folders WHERE bd_account_id = $1',
+        [id]
+      );
+      const orderIndex = Number(countRow.rows[0]?.c) || 0;
+      return client.query(
+        `INSERT INTO bd_account_sync_folders (bd_account_id, folder_id, folder_title, order_index, is_user_created, icon)
+         VALUES ($1, $2, $3, $4, true, $5)
+         RETURNING id, folder_id, folder_title, order_index, is_user_created, icon`,
+        [id, nextFolderId, title, orderIndex, iconVal]
+      );
+    });
     res.status(201).json(insert.rows[0]);
   }));
 
-  // PATCH /:id/sync-folders/order — reorder folders
-  router.patch('/:id/sync-folders/order', asyncHandler(async (req, res) => {
+  // PATCH /:id/sync-folders/order — reorder folders (S10/A4: withOrgContext)
+  router.patch('/:id/sync-folders/order', validate(SyncFoldersOrderSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
     const { order } = req.body;
@@ -350,24 +365,23 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     if (!isOwner) {
       throw new AppError(403, 'Only the account owner can reorder folders', ErrorCodes.FORBIDDEN);
     }
-    if (!Array.isArray(order) || order.length === 0) {
-      throw new AppError(400, 'order must be a non-empty array of folder row ids', ErrorCodes.VALIDATION);
-    }
-    for (let i = 0; i < order.length; i++) {
-      await pool.query(
-        'UPDATE bd_account_sync_folders SET order_index = $1 WHERE id = $2 AND bd_account_id = $3',
-        [i, String(order[i]), id]
+    const result = await withOrgContext(pool, user.organizationId, async (client) => {
+      for (let i = 0; i < order.length; i++) {
+        await client.query(
+          'UPDATE bd_account_sync_folders SET order_index = $1 WHERE id = $2 AND bd_account_id = $3',
+          [i, String(order[i]), id]
+        );
+      }
+      return client.query(
+        'SELECT id, folder_id, folder_title, order_index, COALESCE(is_user_created, false) AS is_user_created, icon FROM bd_account_sync_folders WHERE bd_account_id = $1 ORDER BY order_index',
+        [id]
       );
-    }
-    const result = await pool.query(
-      'SELECT id, folder_id, folder_title, order_index, COALESCE(is_user_created, false) AS is_user_created, icon FROM bd_account_sync_folders WHERE bd_account_id = $1 ORDER BY order_index',
-      [id]
-    );
+    });
     res.json(result.rows);
   }));
 
-  // PATCH /:id/sync-folders/:folderRowId — update folder icon or title
-  router.patch('/:id/sync-folders/:folderRowId', asyncHandler(async (req, res) => {
+  // PATCH /:id/sync-folders/:folderRowId — update folder icon or title (S10/A4: withOrgContext)
+  router.patch('/:id/sync-folders/:folderRowId', validate(SyncFolderPatchSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id: accountId, folderRowId } = req.params;
     const { icon, folder_title: folderTitle } = req.body;
@@ -375,7 +389,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     await getAccountOr404(pool, accountId, user.organizationId, 'id');
     await requireBidiOwnAccount(pool, accountId, user);
     const updates: string[] = [];
-    const values: any[] = [];
+    const values: (string | null)[] = [];
     let i = 1;
     if (icon !== undefined) {
       const iconVal = icon === null || icon === '' ? null : (String(icon).trim().slice(0, 20) || null);
@@ -387,15 +401,14 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       updates.push(`folder_title = $${i++}`);
       values.push(titleVal);
     }
-    if (updates.length === 0) {
-      throw new AppError(400, 'No fields to update', ErrorCodes.VALIDATION);
-    }
     values.push(folderRowId, accountId);
-    const result = await pool.query(
-      `UPDATE bd_account_sync_folders SET ${updates.join(', ')}
-       WHERE id = $${i++} AND bd_account_id = $${i}
-       RETURNING id, folder_id, folder_title, order_index, is_user_created, icon`,
-      values
+    const result = await withOrgContext(pool, user.organizationId, (client) =>
+      client.query(
+        `UPDATE bd_account_sync_folders SET ${updates.join(', ')}
+         WHERE id = $${i} AND bd_account_id = $${i + 1}
+         RETURNING id, folder_id, folder_title, order_index, is_user_created, icon`,
+        values
+      )
     );
     if (result.rows.length === 0) {
       throw new AppError(404, 'Folder not found', ErrorCodes.NOT_FOUND);
@@ -403,7 +416,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     res.json(result.rows[0]);
   }));
 
-  // DELETE /:id/sync-folders/:folderRowId — delete user-created folder
+  // DELETE /:id/sync-folders/:folderRowId — delete user-created folder (S10/A4: withOrgContext)
   router.delete('/:id/sync-folders/:folderRowId', asyncHandler(async (req, res) => {
     const user = req.user;
     const { id: accountId, folderRowId } = req.params;
@@ -421,19 +434,21 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     if (folderRow.rows.length === 0) {
       throw new AppError(404, 'Folder not found', ErrorCodes.NOT_FOUND);
     }
-    const folder = folderRow.rows[0];
+    const folder = folderRow.rows[0] as { folder_id: number; is_user_created: boolean };
     if (!folder.is_user_created) {
       throw new AppError(400, 'Only user-created folders can be deleted. Telegram folders are read-only.', ErrorCodes.BAD_REQUEST);
     }
     const folderIdNum = Number(folder.folder_id);
-    await pool.query(
-      'UPDATE bd_account_sync_chats SET folder_id = NULL WHERE bd_account_id = $1 AND folder_id = $2',
-      [accountId, folderIdNum]
-    );
-    await pool.query(
-      'DELETE FROM bd_account_sync_folders WHERE id = $1 AND bd_account_id = $2',
-      [folderRowId, accountId]
-    );
+    await withOrgContext(pool, user.organizationId, async (client) => {
+      await client.query(
+        'UPDATE bd_account_sync_chats SET folder_id = NULL WHERE bd_account_id = $1 AND folder_id = $2',
+        [accountId, folderIdNum]
+      );
+      await client.query(
+        'DELETE FROM bd_account_sync_folders WHERE id = $1 AND bd_account_id = $2',
+        [folderRowId, accountId]
+      );
+    });
     res.status(204).send();
   }));
 
@@ -546,14 +561,14 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
               groups.push(item);
             }
           }
-        } catch (contactsErr: any) {
-          log.warn({ message: 'contacts.search failed, returning SearchPosts only', accountId: id, query: q, error: contactsErr?.message });
+        } catch (contactsErr: unknown) {
+          log.warn({ message: 'contacts.search failed, returning SearchPosts only', accountId: id, query: q, error: getErrorMessage(contactsErr) });
         }
         groups = groups.slice(0, limit);
       }
       res.json(groups);
-    } catch (e: any) {
-      if ((e as any).code === 'QUERY_TOO_SHORT') {
+    } catch (e: unknown) {
+      if (getErrorCode(e) === 'QUERY_TOO_SHORT') {
         throw new AppError(400, 'Query too short', ErrorCodes.VALIDATION);
       }
       throw e;
@@ -585,11 +600,11 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     try {
       const result = await telegramManager.getChannelParticipants(id, chatId, offset, limit, excludeAdmins);
       res.json(result);
-    } catch (e: any) {
-      if ((e as any).code === 'CHAT_ADMIN_REQUIRED') {
+    } catch (e: unknown) {
+      if (getErrorCode(e) === 'CHAT_ADMIN_REQUIRED') {
         throw new AppError(403, 'No permission to get participants', ErrorCodes.FORBIDDEN);
       }
-      if ((e as any).code === 'CHANNEL_PRIVATE') {
+      if (getErrorCode(e) === 'CHANNEL_PRIVATE') {
         throw new AppError(404, 'Channel is private', ErrorCodes.NOT_FOUND);
       }
       throw e;
@@ -610,8 +625,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     try {
       const result = await telegramManager.getActiveParticipants(id, chatId, depth, excludeAdmins);
       res.json(result);
-    } catch (e: any) {
-      if ((e as any).code === 'CHANNEL_PRIVATE') {
+    } catch (e: unknown) {
+      if (getErrorCode(e) === 'CHANNEL_PRIVATE') {
         throw new AppError(404, 'Channel is private', ErrorCodes.NOT_FOUND);
       }
       throw e;
@@ -630,8 +645,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     try {
       await telegramManager.leaveChat(id, chatId);
       res.status(204).send();
-    } catch (e: any) {
-      if ((e as any).code === 'CHANNEL_PRIVATE') {
+    } catch (e: unknown) {
+      if (getErrorCode(e) === 'CHANNEL_PRIVATE') {
         throw new AppError(404, 'Channel is private or already left', ErrorCodes.NOT_FOUND);
       }
       throw e;
@@ -641,15 +656,10 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
   const RESOLVE_CHATS_MAX_INPUTS = 20;
 
   // POST /:id/resolve-chats — resolve links/usernames/invites to chats (Contact Discovery)
-  router.post('/:id/resolve-chats', asyncHandler(async (req, res) => {
+  router.post('/:id/resolve-chats', validate(ResolveChatsSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const body = req.body as { inputs?: unknown };
-    const rawInputs = Array.isArray(body?.inputs) ? body.inputs : [];
-    const inputs = rawInputs
-      .slice(0, RESOLVE_CHATS_MAX_INPUTS)
-      .map((x) => (typeof x === 'string' ? x : String(x)).trim())
-      .filter((x) => x.length > 0);
+    const inputs = (req.body.inputs ?? []).slice(0, RESOLVE_CHATS_MAX_INPUTS);
 
     await getAccountOr404(pool, id, organizationId, 'id');
     const results: Array<{ chatId?: string; title?: string; peerType?: string; error?: string }> = [];
@@ -657,9 +667,9 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       try {
         const resolved = await telegramManager.resolveChatFromInput(id, input);
         results.push({ chatId: resolved.chatId, title: resolved.title, peerType: resolved.peerType });
-      } catch (e: any) {
-        const code = (e as any).code;
-        const msg = e?.message || String(e);
+      } catch (e: unknown) {
+        const code = getErrorCode(e);
+        const msg = getErrorMessage(e);
         results.push({ error: code === 'CHAT_NOT_FOUND' ? 'Chat not found' : code === 'INVITE_EXPIRED' ? 'Invite expired' : code === 'INVALID_INVITE' ? 'Invalid invite link' : msg });
       }
     }
@@ -667,15 +677,10 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // POST /:id/parse/resolve — resolve to ResolvedSource (type, linkedChatId, canGetMembers, canGetMessages) for parse flow
-  router.post('/:id/parse/resolve', asyncHandler(async (req, res) => {
+  router.post('/:id/parse/resolve', validate(ParseResolveSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const body = req.body as { sources?: unknown };
-    const rawSources = Array.isArray(body?.sources) ? body.sources : [];
-    const sources = rawSources
-      .slice(0, RESOLVE_CHATS_MAX_INPUTS)
-      .map((x) => (typeof x === 'string' ? x : String(x)).trim())
-      .filter((x) => x.length > 0);
+    const sources = (req.body.sources ?? []).slice(0, RESOLVE_CHATS_MAX_INPUTS);
 
     await getAccountOr404(pool, id, organizationId, 'id');
     const results: Array<ResolvedSource & { error?: string }> = [];
@@ -683,9 +688,9 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       try {
         const resolved = await telegramManager.resolveSourceFromInput(id, input);
         results.push(resolved);
-      } catch (e: any) {
-        const code = (e as any).code;
-        const msg = e?.message || String(e);
+      } catch (e: unknown) {
+        const code = getErrorCode(e);
+        const msg = getErrorMessage(e);
         results.push({
           input,
           type: 'unknown',
@@ -700,8 +705,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     res.json({ results });
   }));
 
-  // POST /:id/sync-chats — save selected chats for sync (replace existing selection)
-  router.post('/:id/sync-chats', asyncHandler(async (req, res) => {
+  // POST /:id/sync-chats — save selected chats for sync (S10/A4: withOrgContext)
+  router.post('/:id/sync-chats', validate(SyncChatsBodySchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id } = req.params;
     const { chats } = req.body;
@@ -713,57 +718,56 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       throw new AppError(403, 'Only the account owner can change sync chats', ErrorCodes.FORBIDDEN);
     }
 
-    if (!Array.isArray(chats)) {
-      throw new AppError(400, 'chats must be an array', ErrorCodes.VALIDATION);
-    }
-    const MAX_SYNC_CHATS = 2000;
-    if (chats.length > MAX_SYNC_CHATS) {
-      throw new AppError(400, `chats array exceeds maximum of ${MAX_SYNC_CHATS}`, ErrorCodes.VALIDATION);
-    }
-
     const accountTelegramId = account.telegram_id != null ? String(account.telegram_id).trim() : null;
 
-    await pool.query('DELETE FROM bd_account_sync_chats WHERE bd_account_id = $1', [id]);
-    await pool.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
+    const { chatsRows, junctionRows } = await withOrgContext(pool, user.organizationId, async (client) => {
+      await client.query('DELETE FROM bd_account_sync_chats WHERE bd_account_id = $1', [id]);
+      await client.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
 
-    let inserted = 0;
-    for (const c of chats) {
-      const chatId = String(c.id ?? c.telegram_chat_id ?? '').trim();
-      const title = (c.name ?? c.title ?? '').trim();
-      const folderId = c.folderId !== undefined && c.folderId !== null ? Number(c.folderId) : null;
-      const folderIds = Array.isArray(c.folderIds) ? c.folderIds.map((x: any) => Number(x)).filter((n: number) => !Number.isNaN(n)) : (folderId != null ? [folderId] : []);
-      let peerType = 'user';
-      if (c.isChannel) peerType = 'channel';
-      else if (c.isGroup) peerType = 'chat';
-      if (!chatId) {
-        log.warn({ message: 'Skipping chat with empty id', entity_id: id });
-        continue;
-      }
-      if (peerType === 'user' && accountTelegramId && chatId === accountTelegramId) {
-        log.info({ message: 'Skipping Saved Messages (self-chat)', entity_id: id });
-        continue;
-      }
-      const primaryFolder = folderIds[0] ?? folderId ?? null;
-      await pool.query(
-        `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
-         VALUES ($1, $2, $3, $4, false, $5)`,
-        [id, chatId, title, peerType, primaryFolder]
-      );
-      for (const fid of folderIds) {
-        await pool.query(
-          `INSERT INTO bd_account_sync_chat_folders (bd_account_id, telegram_chat_id, folder_id)
-           VALUES ($1, $2, $3) ON CONFLICT (bd_account_id, telegram_chat_id, folder_id) DO NOTHING`,
-          [id, chatId, fid]
+      let inserted = 0;
+      for (const c of chats) {
+        const chatId = String(c.id ?? c.telegram_chat_id ?? '').trim();
+        const title = (c.name ?? c.title ?? '').trim();
+        const folderId = c.folderId !== undefined && c.folderId !== null ? Number(c.folderId) : null;
+        const folderIds = Array.isArray(c.folderIds) ? c.folderIds.map((x: unknown) => Number(x)).filter((n: number) => !Number.isNaN(n)) : (folderId != null ? [folderId] : []);
+        let peerType = 'user';
+        if (c.isChannel) peerType = 'channel';
+        else if (c.isGroup) peerType = 'chat';
+        if (!chatId) {
+          log.warn({ message: 'Skipping chat with empty id', entity_id: id });
+          continue;
+        }
+        if (peerType === 'user' && accountTelegramId && chatId === accountTelegramId) {
+          log.info({ message: 'Skipping Saved Messages (self-chat)', entity_id: id });
+          continue;
+        }
+        const primaryFolder = folderIds[0] ?? folderId ?? null;
+        await client.query(
+          `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
+           VALUES ($1, $2, $3, $4, false, $5)`,
+          [id, chatId, title, peerType, primaryFolder]
         );
+        for (const fid of folderIds) {
+          await client.query(
+            `INSERT INTO bd_account_sync_chat_folders (bd_account_id, telegram_chat_id, folder_id)
+             VALUES ($1, $2, $3) ON CONFLICT (bd_account_id, telegram_chat_id, folder_id) DO NOTHING`,
+            [id, chatId, fid]
+          );
+        }
+        inserted++;
       }
-      inserted++;
-    }
-    log.info({ message: `Saved ${inserted} sync chats (requested ${chats.length})`, entity_id: id });
+      log.info({ message: `Saved ${inserted} sync chats (requested ${chats.length})`, entity_id: id });
+
+      const chatsRows = await client.query(
+        'SELECT id, telegram_chat_id, title, peer_type, folder_id, created_at FROM bd_account_sync_chats WHERE bd_account_id = $1 ORDER BY folder_id NULLS LAST, created_at',
+        [id]
+      );
+      const junctionRows = await client.query('SELECT telegram_chat_id, folder_id FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
+      return { chatsRows, junctionRows };
+    });
 
     await ensureFoldersFromSyncChats(pool, telegramManager, id, log);
 
-    // Обогатить контакты по личным чатам из Telegram (first_name, last_name, username, phone, bio, premium) — в БД.
-    // Важно: после первичной синхронизации пользователь ожидает, что мета уже сохранена, поэтому ждём завершения.
     try {
       const r = await telegramManager.enrichContactsForAccountSyncChats(user.organizationId, id, { delayMs: 60 });
       log.info({ message: `Enriched ${r.enriched} contacts for sync chats`, entity_id: id });
@@ -771,11 +775,6 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       log.warn({ message: 'enrichContactsForAccountSyncChats failed', entity_id: id, error: (err as Error)?.message });
     }
 
-    const chatsRows = await pool.query(
-      'SELECT id, telegram_chat_id, title, peer_type, folder_id, created_at FROM bd_account_sync_chats WHERE bd_account_id = $1 ORDER BY folder_id NULLS LAST, created_at',
-      [id]
-    );
-    const junctionRows = await pool.query('SELECT telegram_chat_id, folder_id FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
     const folderIdsByChat = new Map<string, number[]>();
     for (const r of junctionRows.rows) {
       const tid = String(r.telegram_chat_id);
@@ -867,7 +866,7 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // PATCH /:id/chats/:chatId/folder — assign chat to folders
-  router.patch('/:id/chats/:chatId/folder', asyncHandler(async (req, res) => {
+  router.patch('/:id/chats/:chatId/folder', validate(ChatFolderPatchSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const { id: accountId, chatId } = req.params;
     const { folder_ids: folderIdsRaw, folder_id: legacyFolderId } = req.body;
@@ -876,10 +875,11 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
     await requireBidiOwnAccount(pool, accountId, user);
 
     let folderIds: number[] = [];
-    if (Array.isArray(folderIdsRaw)) {
-      folderIds = folderIdsRaw.map((x: any) => Number(x)).filter((n: number) => !Number.isNaN(n));
+    if (Array.isArray(folderIdsRaw) && folderIdsRaw.length > 0) {
+      folderIds = folderIdsRaw.filter((n) => !Number.isNaN(n));
     } else if (legacyFolderId !== undefined && legacyFolderId !== null && legacyFolderId !== '') {
-      folderIds = [Number(legacyFolderId)];
+      const n = Number(legacyFolderId);
+      if (!Number.isNaN(n)) folderIds = [n];
     }
 
     const chatExists = await pool.query(

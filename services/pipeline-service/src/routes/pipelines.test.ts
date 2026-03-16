@@ -79,8 +79,11 @@ describe('Pipelines Router', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      pool.query.mockImplementationOnce(async () => ({ rows: [created], rowCount: 1 }));
-      pool.query.mockResolvedValue(undefined); // stage inserts
+      // withOrgContext: BEGIN, set_config, then callback (INSERT pipeline + 7 INSERT stage), then COMMIT
+      pool.query.mockImplementationOnce(async () => ({ rows: [], rowCount: 0 })); // BEGIN
+      pool.query.mockImplementationOnce(async () => ({ rows: [], rowCount: 0 })); // set_config
+      pool.query.mockImplementationOnce(async () => ({ rows: [created], rowCount: 1 })); // INSERT pipeline
+      pool.query.mockResolvedValue(undefined); // 7 stage inserts + COMMIT
 
       const res = await request(app)
         .post('/api/pipeline')
@@ -90,8 +93,8 @@ describe('Pipelines Router', () => {
       expect(res.status).toBe(201);
       expect(res.body.name).toBe('New Pipeline');
       expect(res.body.id).toBe(created.id);
-      // Default stages: 7 inserts
-      expect(pool.query).toHaveBeenCalledTimes(8); // 1 for pipeline + 7 for stages
+      // withOrgContext: BEGIN + set_config + INSERT pipeline + 7 stages + COMMIT = 11
+      expect(pool.query).toHaveBeenCalledTimes(11);
     });
 
     it('creates pipeline with custom name and description', async () => {
@@ -104,10 +107,12 @@ describe('Pipelines Router', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      // When isDefault=true: 1st=UPDATE, 2nd=INSERT pipeline, 3rd-9th=INSERT stages
+      // withOrgContext: BEGIN, set_config, then callback (UPDATE is_default, INSERT pipeline, 7 INSERT stage), then COMMIT
+      pool.query.mockImplementationOnce(async () => ({ rows: [], rowCount: 0 })); // BEGIN
+      pool.query.mockImplementationOnce(async () => ({ rows: [], rowCount: 0 })); // set_config
       pool.query.mockImplementationOnce(async () => ({})); // UPDATE is_default
       pool.query.mockImplementationOnce(async () => ({ rows: [created], rowCount: 1 })); // INSERT pipeline
-      pool.query.mockResolvedValue(undefined); // stage inserts
+      pool.query.mockResolvedValue(undefined); // 7 stage inserts + COMMIT
 
       const res = await request(app)
         .post('/api/pipeline')

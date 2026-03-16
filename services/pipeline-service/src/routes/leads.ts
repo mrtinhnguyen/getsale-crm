@@ -1,21 +1,28 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import crypto from 'crypto';
+import { z } from 'zod';
 import { Counter } from 'prom-client';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
+
+const LeadCreateSchema = z.object({
+  contactId: z.string().uuid('contactId must be a valid UUID'),
+  pipelineId: z.string().uuid('pipelineId must be a valid UUID'),
+  stageId: z.string().uuid().optional(),
+  responsibleId: z.string().uuid().optional(),
+});
 
 interface Deps {
   pool: Pool;
   rabbitmq: RabbitMQClient;
   log: Logger;
   eventPublishTotal: Counter;
-  eventPublishFailedTotal: Counter;
 }
 
-export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal }: Deps): Router {
+export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal }: Deps): Router {
   const router = Router();
 
   // Pipelines that contain a contact
@@ -78,13 +85,9 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
   }));
 
   // Add contact to funnel
-  router.post('/leads', asyncHandler(async (req, res) => {
+  router.post('/leads', validate(LeadCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
-    const { contactId, pipelineId, stageId, responsibleId } = req.body;
-
-    if (!contactId || !pipelineId) {
-      throw new AppError(400, 'contactId and pipelineId are required', ErrorCodes.BAD_REQUEST);
-    }
+    const { contactId, pipelineId, stageId, responsibleId } = req.body as z.infer<typeof LeadCreateSchema>;
 
     const contactCheck = await pool.query('SELECT 1 FROM contacts WHERE id = $1 AND organization_id = $2', [contactId, organizationId]);
     if (contactCheck.rows.length === 0) throw new AppError(404, 'Contact not found', ErrorCodes.NOT_FOUND);
@@ -108,14 +111,6 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
       if (stageCheck.rows.length === 0) throw new AppError(400, 'Stage not found or does not belong to pipeline', ErrorCodes.BAD_REQUEST);
     }
 
-    const existing = await pool.query(
-      'SELECT id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3 AND deleted_at IS NULL',
-      [organizationId, contactId, pipelineId]
-    );
-    if (existing.rows.length > 0) {
-      throw new AppError(409, 'Contact is already in this pipeline', ErrorCodes.CONFLICT);
-    }
-
     let responsibleIdValid: string | null = null;
     const candidateId = (responsibleId && typeof responsibleId === 'string' ? responsibleId : userId) as string;
     const userCheck = await pool.query(
@@ -124,22 +119,31 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     );
     if (userCheck.rows.length > 0) responsibleIdValid = candidateId;
 
-    const maxOrder = await pool.query('SELECT COALESCE(MAX(order_index), -1) + 1 AS next FROM leads WHERE stage_id = $1', [targetStageId]);
-    const orderIndex = maxOrder.rows[0]?.next ?? 0;
-
-    const insert = await pool.query(
-      `INSERT INTO leads (organization_id, contact_id, pipeline_id, stage_id, order_index, responsible_id)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [organizationId, contactId, pipelineId, targetStageId, orderIndex, responsibleIdValid]
-    );
+    const insert = await withOrgContext(pool, organizationId, async (client) => {
+      const existing = await client.query(
+        'SELECT id FROM leads WHERE organization_id = $1 AND contact_id = $2 AND pipeline_id = $3 AND deleted_at IS NULL',
+        [organizationId, contactId, pipelineId]
+      );
+      if (existing.rows.length > 0) {
+        throw new AppError(409, 'Contact is already in this pipeline', ErrorCodes.CONFLICT);
+      }
+      const maxOrder = await client.query('SELECT COALESCE(MAX(order_index), -1) + 1 AS next FROM leads WHERE stage_id = $1', [targetStageId]);
+      const orderIndex = maxOrder.rows[0]?.next ?? 0;
+      const result = await client.query(
+        `INSERT INTO leads (organization_id, contact_id, pipeline_id, stage_id, order_index, responsible_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [organizationId, contactId, pipelineId, targetStageId, orderIndex, responsibleIdValid]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: crypto.randomUUID(), type: EventType.LEAD_CREATED, timestamp: new Date(),
-      organizationId, userId,
-      data: { contactId, pipelineId, stageId: targetStageId, leadId: insert.rows[0].id },
+      organizationId, userId, correlationId: req.correlationId,
+      data: { contactId, pipelineId, stageId: targetStageId, leadId: (insert as { id: string }).id },
     } as Event).catch((e) => log.warn({ message: 'Failed to publish LEAD_CREATED', error: String(e) }));
 
-    res.status(201).json(insert.rows[0]);
+    res.status(201).json(insert);
   }));
 
   // Update lead (move stage / reorder / responsible / amount)
@@ -205,16 +209,18 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     if (params.length === 0) return res.json(existing.rows[0]);
 
     params.push(id, organizationId);
-    const result = await pool.query(
-      `UPDATE leads SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
-      params
-    );
+    const result = await withOrgContext(pool, organizationId, async (client) => {
+      return client.query(
+        `UPDATE leads SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
+        params
+      );
+    });
 
     const fromStageId = existing.rows[0].stage_id;
     if (stageId != null && fromStageId !== stageId) {
-      await publishStageChange({ pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal,
+      await publishStageChange({ pool, rabbitmq, log, eventPublishTotal,
         leadId: id, organizationId, userId, contactId: existing.rows[0].contact_id,
-        pipelineId: existing.rows[0].pipeline_id, fromStageId, toStageId: stageId });
+        pipelineId: existing.rows[0].pipeline_id, fromStageId, toStageId: stageId, correlationId: req.correlationId });
     }
 
     res.json(result.rows[0]);
@@ -229,8 +235,8 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
       throw new AppError(400, 'stage_id required', ErrorCodes.BAD_REQUEST);
     }
     const stage = await applyLeadStageChange(
-      { pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal },
-      { leadId: id, organizationId, userId, stageId }
+      { pool, rabbitmq, log, eventPublishTotal },
+      { leadId: id, organizationId, userId, stageId, correlationId: req.correlationId }
     );
     res.json({ stage: { id: stage.id, name: stage.name } });
   }));
@@ -266,8 +272,8 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
     }
 
     const stage = await applyLeadStageChange(
-      { pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal },
-      { leadId: leadRow.id, organizationId, userId, stageId }
+      { pool, rabbitmq, log, eventPublishTotal },
+      { leadId: leadRow.id, organizationId, userId, stageId, correlationId: req.correlationId }
     );
     res.json({ stage: { id: stage.id, name: stage.name } });
   }));
@@ -293,9 +299,11 @@ export function leadsRouter({ pool, rabbitmq, log, eventPublishTotal, eventPubli
   router.delete('/leads/:id', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const result = await pool.query(
-      'UPDATE leads SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL RETURNING id',
-      [id, organizationId]
+    const result = await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        'UPDATE leads SET deleted_at = NOW() WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL RETURNING id',
+        [id, organizationId]
+      )
     );
     if (result.rows.length === 0) throw new AppError(404, 'Lead not found', ErrorCodes.NOT_FOUND);
     res.status(204).send();
@@ -310,15 +318,14 @@ interface ApplyStageChangeDeps {
   rabbitmq: RabbitMQClient;
   log: Logger;
   eventPublishTotal: Counter;
-  eventPublishFailedTotal: Counter;
 }
 
 async function applyLeadStageChange(
   deps: ApplyStageChangeDeps,
-  params: { leadId: string; organizationId: string; userId: string; stageId: string }
+  params: { leadId: string; organizationId: string; userId: string; stageId: string; correlationId?: string }
 ): Promise<{ id: string; name: string }> {
-  const { pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal } = deps;
-  const { leadId, organizationId, userId, stageId } = params;
+  const { pool, rabbitmq, log, eventPublishTotal } = deps;
+  const { leadId, organizationId, userId, stageId, correlationId } = params;
 
   const existing = await pool.query(
     'SELECT l.*, s.name AS stage_name FROM leads l JOIN stages s ON s.id = l.stage_id WHERE l.id = $1 AND l.organization_id = $2 AND l.deleted_at IS NULL',
@@ -339,9 +346,9 @@ async function applyLeadStageChange(
   await pool.query('UPDATE leads SET stage_id = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3',
     [stageId, leadId, organizationId]);
 
-  await publishStageChange({ pool, rabbitmq, log, eventPublishTotal, eventPublishFailedTotal,
+  await publishStageChange({ pool, rabbitmq, log, eventPublishTotal,
     leadId, organizationId, userId, contactId: existing.rows[0].contact_id,
-    pipelineId: existing.rows[0].pipeline_id, fromStageId, toStageId: stageId });
+    pipelineId: existing.rows[0].pipeline_id, fromStageId, toStageId: stageId, correlationId });
 
   const stageRow = stageCheck.rows[0] as { id: string; name: string };
   return { id: stageRow.id, name: stageRow.name };
@@ -350,9 +357,10 @@ async function applyLeadStageChange(
 // --- Shared: publish lead stage change + activity log ---
 interface StageChangeParams {
   pool: Pool; rabbitmq: RabbitMQClient; log: Logger;
-  eventPublishTotal: Counter; eventPublishFailedTotal: Counter;
+  eventPublishTotal: Counter;
   leadId: string; organizationId: string; userId: string;
   contactId: string; pipelineId: string; fromStageId: string; toStageId: string;
+  correlationId?: string;
 }
 
 async function publishStageChange(p: StageChangeParams) {
@@ -380,7 +388,7 @@ async function publishStageChange(p: StageChangeParams) {
 
   const event = {
     id: eventId, type: EventType.LEAD_STAGE_CHANGED, timestamp: new Date(),
-    organizationId: p.organizationId, userId: p.userId,
+    organizationId: p.organizationId, userId: p.userId, correlationId: p.correlationId,
     data: {
       contactId: p.contactId, pipelineId: p.pipelineId,
       fromStageId: p.fromStageId, toStageId: p.toStageId,
@@ -393,7 +401,6 @@ async function publishStageChange(p: StageChangeParams) {
     await p.rabbitmq.publishEvent(event);
     p.eventPublishTotal.inc({ event_type: EventType.LEAD_STAGE_CHANGED });
   } catch (e) {
-    p.eventPublishFailedTotal.inc({ event_type: EventType.LEAD_STAGE_CHANGED });
     p.log.error({ message: 'Failed to publish LEAD_STAGE_CHANGED', event_id: eventId, correlation_id: eventId, error: e instanceof Error ? e.message : String(e) });
   }
 }

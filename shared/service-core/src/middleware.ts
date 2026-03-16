@@ -100,16 +100,26 @@ export function requireRole(...roles: string[]): RequestHandler {
   };
 }
 
-// ─── RBAC permission check (DB-backed) ───────────────────────────────────
+// ─── RBAC permission check (DB-backed, cached) ─────────────────────────────
 
-/** Single source of truth for RBAC: role_permissions table; owner has all; admin has all except transfer_ownership (when DB fails or missing row). */
+const PERMISSION_CACHE_TTL_MS = 60_000; // 1 minute; permission changes propagate within TTL
+
+/** Single source of truth for RBAC: role_permissions table; owner has all; admin has all except transfer_ownership.
+ *  A7/S11: in-memory cache with TTL to avoid DB hit on every permission check. */
 export function canPermission(pool: Pool) {
+  const cache = new Map<string, { result: boolean; expires: number }>();
+
   return async function check(
     role: string,
     resource: string,
     action: string
   ): Promise<boolean> {
     const roleLower = (role || '').toLowerCase();
+    const key = `${roleLower}:${resource}:${action}`;
+    const now = Date.now();
+    const entry = cache.get(key);
+    if (entry && entry.expires > now) return entry.result;
+
     try {
       const r = await pool.query(
         `SELECT 1 FROM role_permissions
@@ -117,12 +127,15 @@ export function canPermission(pool: Pool) {
          LIMIT 1`,
         [roleLower, resource, action]
       );
-      if (r.rows.length > 0) return true;
-      if (roleLower === 'owner') return true;
-      if (roleLower === 'admin') return action !== 'transfer_ownership';
-      return false;
+      let result: boolean;
+      if (r.rows.length > 0) result = true;
+      else if (roleLower === 'owner') result = true;
+      else if (roleLower === 'admin') result = action !== 'transfer_ownership';
+      else result = false;
+      cache.set(key, { result, expires: now + PERMISSION_CACHE_TTL_MS });
+      return result;
     } catch {
-      // Fail closed: on DB error deny access (do not allow by role)
+      // Fail closed: on DB error deny access (do not cache errors so retries can succeed)
       return false;
     }
   };
@@ -188,6 +201,16 @@ export function requestLogger(log: Logger): RequestHandler {
 export function errorHandler(log: Logger) {
   return (err: Error, req: Request, res: Response, _next: NextFunction) => {
     if (isAppError(err)) {
+      if (process.env.NODE_ENV === 'production' && err.details != null) {
+        log.warn({
+          message: 'Validation/error details (not sent to client)',
+          correlation_id: req.correlationId,
+          http_method: req.method,
+          http_path: req.path,
+          status_code: err.statusCode,
+          details: err.details,
+        });
+      }
       res.status(err.statusCode).json(err.toJSON());
       return;
     }

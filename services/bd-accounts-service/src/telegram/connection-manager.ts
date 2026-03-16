@@ -3,6 +3,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { randomUUID } from 'crypto';
 import { decryptIfNeeded } from '../crypto';
+import { getErrorMessage } from '../helpers';
 import { buildTelegramProxy } from './helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, ProxyConfig, StructuredLog } from './types';
 import type { SessionManager } from './session-manager';
@@ -108,9 +109,10 @@ export class ConnectionManager {
       if (!info?.client?.connected) return;
       try {
         await client.invoke(new Api.updates.GetState());
-      } catch (e: any) {
-        if (e?.message !== 'TIMEOUT' && !e?.message?.includes('builder.resolve')) {
-          this.log.warn({ message: `GetState keepalive failed for ${accountId}`, error: e?.message });
+      } catch (e: unknown) {
+        const msg = getErrorMessage(e);
+        if (msg !== 'TIMEOUT' && !msg.includes('builder.resolve')) {
+          this.log.warn({ message: `GetState keepalive failed for ${accountId}`, error: msg });
         }
       }
     }, this.UPDATE_KEEPALIVE_MS);
@@ -172,12 +174,13 @@ export class ConnectionManager {
       await client.connect();
       this.log.info({ message: `Connected account ${accountId} (${phoneNumber})` });
 
-      (client as any)._errorHandler = async (err: any) => {
-        if (err?.message === 'TIMEOUT' || err?.message?.includes?.('TIMEOUT')) {
+      (client as any)._errorHandler = async (err: unknown) => {
+        const msg = getErrorMessage(err);
+        if (msg === 'TIMEOUT' || msg.includes('TIMEOUT')) {
           this.log.warn({ message: 'Update loop TIMEOUT (GramJS), scheduling reconnect', accountId });
           this.scheduleReconnectAllAfterTimeout();
         } else {
-          this.log.error({ message: 'Telegram client error', accountId, error: err?.message || String(err) });
+          this.log.error({ message: 'Telegram client error', accountId, error: msg });
         }
       };
 
@@ -186,8 +189,8 @@ export class ConnectionManager {
       try {
         await client.getMe();
         this.log.info({ message: `Session verified for account ${accountId}` });
-      } catch (error: any) {
-        this.log.error({ message: `Session invalid for account ${accountId}`, error: error.message });
+      } catch (error: unknown) {
+        this.log.error({ message: `Session invalid for account ${accountId}`, error: getErrorMessage(error) });
         await client.disconnect();
         throw new Error('Invalid session. Please reconnect the account.');
       }
@@ -198,8 +201,8 @@ export class ConnectionManager {
       try {
         await client.getMe();
         this.log.info({ message: `getMe() after handlers — update stream active for account ${accountId}` });
-      } catch (e: any) {
-        this.log.warn({ message: `getMe() after handlers failed (non-fatal)`, error: e?.message });
+      } catch (e: unknown) {
+        this.log.warn({ message: `getMe() after handlers failed (non-fatal)`, error: getErrorMessage(e) });
       }
 
       await this.sessionManager.saveSession(accountId, client);
@@ -223,9 +226,9 @@ export class ConnectionManager {
       await this.updateAccountStatus(accountId, 'connected', 'Successfully connected');
 
       return client;
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (!this.clients.has(accountId)) await this.releaseLock(accountId);
-      this.log.error({ message: `Error connecting account ${accountId}`, error: error?.message || String(error) });
+      this.log.error({ message: `Error connecting account ${accountId}`, error: getErrorMessage(error) });
       await this.updateAccountStatus(accountId, 'error', error.message || 'Connection failed');
       throw error;
     }
@@ -238,8 +241,8 @@ export class ConnectionManager {
     if (clientInfo) {
       try {
         await clientInfo.client.disconnect();
-      } catch (error: any) {
-        this.log.error({ message: `Error disconnecting account ${accountId}`, error: error?.message || String(error) });
+      } catch (error: unknown) {
+        this.log.error({ message: `Error disconnecting account ${accountId}`, error: getErrorMessage(error) });
       }
       this.clients.delete(accountId);
       this.dialogFiltersCache.delete(accountId);
@@ -259,8 +262,8 @@ export class ConnectionManager {
         `INSERT INTO bd_account_status (account_id, status, message) VALUES ($1, $2, $3)`,
         [accountId, status, message || '']
       );
-    } catch (error: any) {
-      this.log.error({ message: `Error updating account status`, error: error?.message || String(error) });
+    } catch (error: unknown) {
+      this.log.error({ message: `Error updating account status`, error: getErrorMessage(error) });
     }
   }
 
@@ -311,8 +314,8 @@ export class ConnectionManager {
           decApiHash,
           decSession
         );
-      } catch (err: any) {
-        this.log.error('[TelegramManager] Reconnect failed for account', accountId, err?.message || err);
+      } catch (err: unknown) {
+        this.log.error('[TelegramManager] Reconnect failed for account', accountId, getErrorMessage(err));
       }
     }
   }
@@ -361,8 +364,8 @@ export class ConnectionManager {
 
         clientInfo.reconnectAttempts = 0;
         this.reconnectIntervals.delete(accountId);
-      } catch (error: any) {
-        this.log.error({ message: `Reconnection failed for ${accountId}`, error: error?.message || String(error) });
+      } catch (error: unknown) {
+        this.log.error({ message: `Reconnection failed for ${accountId}`, error: getErrorMessage(error) });
         this.scheduleReconnect(accountId);
       }
     }, this.RECONNECT_DELAY);
@@ -394,8 +397,8 @@ export class ConnectionManager {
             apiHash,
             sessionStr
           );
-        } catch (error: any) {
-          this.log.error({ message: `Failed to initialize account ${account.id}`, error: error?.message || String(error) });
+        } catch (error: unknown) {
+          this.log.error({ message: `Failed to initialize account ${account.id}`, error: getErrorMessage(error) });
         }
       }
     } catch (error) {
@@ -423,7 +426,7 @@ export class ConnectionManager {
         [accountIds]
       );
 
-      const activeAccountIds = new Set(result.rows.map((row: any) => row.id));
+      const activeAccountIds = new Set(result.rows.map((row: { id: string }) => row.id));
 
       for (const accountId of accountIds) {
         if (!activeAccountIds.has(accountId)) {

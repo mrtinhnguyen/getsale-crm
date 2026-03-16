@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { apiClient } from '@/lib/api/client';
-import { reportError } from '@/lib/error-reporter';
+import { reportError, reportWarning } from '@/lib/error-reporter';
 import { useToast } from '@/lib/contexts/toast-context';
 import type { Chat, Message, SyncFolder, LeadContext } from '../types';
 import { MESSAGES_PAGE_SIZE, VIRTUAL_LIST_THRESHOLD, LOAD_OLDER_COOLDOWN_MS } from '../types';
@@ -135,7 +135,9 @@ export function useMessagingActions(
         const seen = new Set<string>();
         return next.filter((m) => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
       });
-      if (s.selectedAccountId && s.selectedChat) apiClient.post(`/api/bd-accounts/${s.selectedAccountId}/draft`, { channelId: s.selectedChat.channel_id, text: '' }).catch(() => {});
+      if (s.selectedAccountId && s.selectedChat) apiClient.post(`/api/bd-accounts/${s.selectedAccountId}/draft`, { channelId: s.selectedChat.channel_id, text: '' }).catch((err) => {
+        reportWarning('Clear draft after send failed', { error: err, component: 'useMessagingActions', action: 'sendMessage' });
+      });
       if (s.selectedChat.conversation_id) s.setNewLeads((prev) => prev.filter((c) => c.conversation_id !== s.selectedChat!.conversation_id));
       await fetchChats();
     } catch (error: unknown) {

@@ -2,10 +2,10 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
-import { EventType } from '@getsale/events';
+import { EventType, CampaignStartedEvent, CampaignPausedEvent } from '@getsale/events';
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
 
 interface Deps {
   pool: Pool;
@@ -148,14 +148,16 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
       [CampaignStatus.ACTIVE, id, organizationId]
     );
     try {
-      await rabbitmq.publishEvent({
+      const event: CampaignStartedEvent = {
         id: randomUUID(),
         type: EventType.CAMPAIGN_STARTED,
         timestamp: new Date(),
         organizationId,
         userId,
+        correlationId: req.correlationId,
         data: { campaignId: id },
-      } as any);
+      };
+      await rabbitmq.publishEvent(event);
     } catch (err) {
       log.warn({ message: 'CAMPAIGN_STARTED publish failed', campaignId: id, error: err instanceof Error ? err.message : String(err) });
     }
@@ -166,22 +168,26 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
   router.post('/:id/pause', asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { id } = req.params;
-    const r = await pool.query(
-      "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3 AND status = $4 RETURNING *",
-      [CampaignStatus.PAUSED, id, organizationId, CampaignStatus.ACTIVE]
+    const r = await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        "UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3 AND status = $4 RETURNING *",
+        [CampaignStatus.PAUSED, id, organizationId, CampaignStatus.ACTIVE]
+      )
     );
     if (r.rows.length === 0) {
       throw new AppError(404, 'Campaign not found or not active', ErrorCodes.NOT_FOUND);
     }
     try {
-      await rabbitmq.publishEvent({
+      const event: CampaignPausedEvent = {
         id: randomUUID(),
         type: EventType.CAMPAIGN_PAUSED,
         timestamp: new Date(),
         organizationId,
         userId,
+        correlationId: req.correlationId,
         data: { campaignId: id },
-      } as any);
+      };
+      await rabbitmq.publishEvent(event);
     } catch (err) {
       log.warn({ message: 'CAMPAIGN_PAUSED publish failed', campaignId: id, error: err instanceof Error ? err.message : String(err) });
     }

@@ -1,8 +1,8 @@
-import express, { Express, Router } from 'express';
+import express, { Express, Request, Router } from 'express';
 import cors from 'cors';
 import { Pool, PoolConfig } from 'pg';
 import { Registry, Counter, Histogram, collectDefaultMetrics } from 'prom-client';
-import { RabbitMQClient } from '@getsale/utils';
+import { RabbitMQClient, eventPublishFailedTotal } from '@getsale/utils';
 import { createLogger, Logger } from '@getsale/logger';
 import {
   correlationId,
@@ -83,7 +83,7 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
   app.use(express.json({
     limit: '5mb',
     verify: (req, _res, buf) => {
-      (req as any).rawBody = buf;
+      (req as Request).rawBody = buf;
     },
   }));
   app.use(correlationId());
@@ -110,6 +110,7 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
   // Prometheus
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
+  registry.registerMetric(eventPublishFailedTotal);
 
   const httpRequestDuration = new Histogram({
     name: 'http_request_duration_seconds',
@@ -178,7 +179,7 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
     }
   }
 
-  // Health check
+  // Health check (liveness: process is up)
   app.get('/health', async (_req, res) => {
     const checks: Record<string, string> = {};
 
@@ -198,6 +199,31 @@ export async function createServiceApp(config: ServiceConfig): Promise<ServiceCo
     const allOk = Object.values(checks).every((v) => v === 'ok');
     res.status(allOk ? 200 : 503).json({
       status: allOk ? 'ok' : 'degraded',
+      service: config.name,
+      checks,
+    });
+  });
+
+  // Readiness check (dependencies ready for traffic; use for K8s readiness probe)
+  app.get('/ready', async (_req, res) => {
+    const checks: Record<string, string> = {};
+
+    if (!config.skipDb) {
+      try {
+        await pool.query('SELECT 1');
+        checks.db = 'ok';
+      } catch {
+        checks.db = 'error';
+      }
+    }
+
+    if (!config.skipRabbitMQ) {
+      checks.rabbitmq = rabbitmq.isConnected() ? 'ok' : 'disconnected';
+    }
+
+    const allOk = Object.values(checks).every((v) => v === 'ok');
+    res.status(allOk ? 200 : 503).json({
+      ready: allOk,
       service: config.name,
       checks,
     });

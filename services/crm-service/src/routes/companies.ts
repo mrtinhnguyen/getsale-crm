@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, validate, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, validate, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
 import { parsePageLimit, buildPagedResponse } from '../helpers';
 import { CompanyCreateSchema, CompanyUpdateSchema } from '../validation';
 
@@ -68,55 +68,60 @@ export function companiesRouter({ pool, rabbitmq, log }: Deps): Router {
     const { id: userId, organizationId } = req.user;
     const { name, industry, size, description, goals, policies } = req.body;
 
-    const result = await pool.query(
-      `INSERT INTO companies (organization_id, name, industry, size, description, goals, policies)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [organizationId, name, industry ?? null, size ?? null, description ?? null,
-       JSON.stringify(goals ?? []), JSON.stringify(policies ?? {})]
-    );
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO companies (organization_id, name, industry, size, description, goals, policies)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        [organizationId, name, industry ?? null, size ?? null, description ?? null,
+         JSON.stringify(goals ?? []), JSON.stringify(policies ?? {})]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.COMPANY_CREATED, timestamp: new Date(),
-      organizationId, userId, data: { companyId: result.rows[0].id },
+      organizationId, userId, correlationId: req.correlationId, data: { companyId: row.id },
     } as Event);
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(row);
   }));
 
   router.put('/:id', validate(CompanyUpdateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { id } = req.params;
-
-    const existing = await pool.query(
-      'SELECT * FROM companies WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
-      [id, organizationId]
-    );
-    if (existing.rows.length === 0) {
-      throw new AppError(404, 'Company not found', ErrorCodes.NOT_FOUND);
-    }
-
     const { name, industry, size, description, goals, policies } = req.body;
-    const row = existing.rows[0];
-    const result = await pool.query(
-      `UPDATE companies SET
-        name = COALESCE($2, name), industry = $3, size = $4, description = $5,
-        goals = COALESCE($6, goals), policies = COALESCE($7, policies), updated_at = NOW()
-       WHERE id = $1 AND organization_id = $8 RETURNING *`,
-      [id, name ?? row.name,
-       industry !== undefined ? industry : row.industry,
-       size !== undefined ? size : row.size,
-       description !== undefined ? description : row.description,
-       goals !== undefined ? JSON.stringify(goals) : row.goals,
-       policies !== undefined ? JSON.stringify(policies) : row.policies,
-       organizationId]
-    );
+
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const existing = await client.query(
+        'SELECT * FROM companies WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL',
+        [id, organizationId]
+      );
+      if (existing.rows.length === 0) {
+        throw new AppError(404, 'Company not found', ErrorCodes.NOT_FOUND);
+      }
+      const r = existing.rows[0];
+      const result = await client.query(
+        `UPDATE companies SET
+          name = COALESCE($2, name), industry = $3, size = $4, description = $5,
+          goals = COALESCE($6, goals), policies = COALESCE($7, policies), updated_at = NOW()
+         WHERE id = $1 AND organization_id = $8 RETURNING *`,
+        [id, name ?? r.name,
+         industry !== undefined ? industry : r.industry,
+         size !== undefined ? size : r.size,
+         description !== undefined ? description : r.description,
+         goals !== undefined ? JSON.stringify(goals) : r.goals,
+         policies !== undefined ? JSON.stringify(policies) : r.policies,
+         organizationId]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: randomUUID(), type: EventType.COMPANY_UPDATED, timestamp: new Date(),
-      organizationId, userId, data: { companyId: id },
+      organizationId, userId, correlationId: req.correlationId, data: { companyId: id },
     } as Event);
 
-    res.json(result.rows[0]);
+    res.json(row);
   }));
 
   router.delete('/:id', asyncHandler(async (req, res) => {

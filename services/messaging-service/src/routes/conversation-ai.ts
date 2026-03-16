@@ -55,7 +55,8 @@ export function conversationAiRouter({ pool, log, aiClient }: Deps): Router {
       const payload = await aiClient.post<Record<string, unknown>>(
         '/api/ai/conversations/analyze',
         { messages },
-        { 'x-correlation-id': req.correlationId || '' }
+        undefined,
+        { organizationId, correlationId: req.correlationId }
       );
 
       await pool.query(
@@ -118,7 +119,8 @@ export function conversationAiRouter({ pool, log, aiClient }: Deps): Router {
       const aiData = await aiClient.post<{ summary?: string }>(
         '/api/ai/chat/summarize',
         { messages },
-        { 'x-correlation-id': req.correlationId || '' }
+        undefined,
+        { organizationId, correlationId: req.correlationId }
       );
       const summary = aiData.summary ?? '';
 

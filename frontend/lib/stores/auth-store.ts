@@ -52,7 +52,9 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         try {
           await authApi.post('/logout', {});
-        } catch (_) {}
+        } catch (e) {
+          (await import('../error-reporter')).reportWarning('Logout API call failed', { error: e, action: 'logout' });
+        }
         set({ user: null, isAuthenticated: false, workspaces: null });
       },
 
@@ -68,7 +70,8 @@ export const useAuthStore = create<AuthState>()(
         try {
           const response = await authApi.get<Workspace[]>('/workspaces');
           set({ workspaces: response.data });
-        } catch {
+        } catch (e) {
+          (await import('../error-reporter')).reportWarning('Fetch workspaces failed', { error: e, action: 'fetchWorkspaces' });
           set({ workspaces: [] });
         }
       },
@@ -84,7 +87,9 @@ export const useAuthStore = create<AuthState>()(
           const payload = { state: { user: newUser, isAuthenticated: true }, version: 0 };
           try {
             localStorage.setItem(key, JSON.stringify(payload));
-          } catch (_) {}
+          } catch (e) {
+            (await import('../error-reporter')).reportWarning('localStorage setItem failed', { error: e, action: 'switchWorkspace' });
+          }
           window.location.href = '/dashboard';
         }
       },

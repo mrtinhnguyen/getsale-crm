@@ -1,9 +1,15 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { randomBytes } from 'crypto';
+import { z } from 'zod';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, canPermission, requireUser, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, canPermission, requireUser, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { auditLog, getClientIp, normalizeRole, getRoleLevel } from '../helpers';
+
+const CreateInviteLinkSchema = z.object({
+  role: z.string().max(64).optional(),
+  expiresInDays: z.coerce.number().int().min(1).max(365).optional(),
+});
 
 interface Deps {
   pool: Pool;
@@ -84,20 +90,20 @@ export function inviteLinksRouter({ pool }: Deps): Router {
     );
   }));
 
-  router.post('/', asyncHandler(async (req, res) => {
+  router.post('/', validate(CreateInviteLinkSchema), asyncHandler(async (req, res) => {
     const user = req.user;
     const allowed = await checkPermission(user.role, 'invite_links', 'create');
     if (!allowed) {
       throw new AppError(403, 'Only owner or admin can create invite links', ErrorCodes.FORBIDDEN);
     }
-    const { role: linkRole = 'bidi', expiresInDays = 7 } = req.body;
-    const role = normalizeRole(linkRole);
+    const { role: linkRole, expiresInDays } = req.body;
+    const role = normalizeRole(linkRole ?? 'bidi');
     if (getRoleLevel(role) > getRoleLevel(user.role)) {
       throw new AppError(403, 'Cannot create invite link with role higher than your own', ErrorCodes.FORBIDDEN);
     }
     const token = randomBytes(32).toString('hex');
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + Number(expiresInDays) || 7);
+    expiresAt.setDate(expiresAt.getDate() + (expiresInDays ?? 7));
 
     await pool.query(
       `INSERT INTO organization_invite_links (organization_id, token, role, expires_at, created_by)

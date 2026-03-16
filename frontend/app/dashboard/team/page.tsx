@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { apiClient } from '@/lib/api/client';
+import { reportError } from '@/lib/error-reporter';
 
 interface TeamMember {
   id?: string;
@@ -85,7 +86,7 @@ export default function TeamPage() {
       const response = await apiClient.get('/api/team/invitations');
       setPendingInvitations(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
-      console.error('Error fetching pending invitations:', error);
+      reportError(error, { component: 'TeamPage', action: 'fetchPendingInvitations' });
       setPendingInvitations([]);
     } finally {
       setPendingInvitationsLoading(false);
@@ -98,7 +99,7 @@ export default function TeamPage() {
       const response = await apiClient.get('/api/team/invite-links');
       setInviteLinks(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
-      console.error('Error fetching invite links:', error);
+      reportError(error, { component: 'TeamPage', action: 'fetchInviteLinks' });
       setInviteLinks([]);
     } finally {
       setInviteLinksLoading(false);
@@ -119,7 +120,7 @@ export default function TeamPage() {
       });
       setMembers(deduped);
     } catch (error) {
-      console.error('Error fetching team members:', error);
+      reportError(error, { component: 'TeamPage', action: 'fetchMembers' });
       setMembers([]);
     } finally {
       setLoading(false);
@@ -141,7 +142,7 @@ export default function TeamPage() {
       fetchMembers();
       fetchPendingInvitations();
     } catch (error) {
-      console.error('Error inviting member:', error);
+      reportError(error, { component: 'TeamPage', action: 'inviteMember' });
     } finally {
       setInviting(false);
     }
@@ -153,7 +154,7 @@ export default function TeamPage() {
       await apiClient.post('/api/team/invite-links', { expiresInDays: 7 });
       await fetchInviteLinks();
     } catch (error) {
-      console.error('Error creating invite link:', error);
+      reportError(error, { component: 'TeamPage', action: 'createInviteLink' });
     } finally {
       setCreatingLink(false);
     }
@@ -170,7 +171,7 @@ export default function TeamPage() {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
     } catch (e) {
-      console.error('Copy failed:', e);
+      reportError(e, { component: 'TeamPage', action: 'copyInviteLink' });
     }
   };
 
@@ -180,7 +181,7 @@ export default function TeamPage() {
       await apiClient.delete(`/api/team/invite-links/${id}`);
       setInviteLinks((prev) => prev.filter((l) => l.id !== id));
     } catch (error) {
-      console.error('Error revoking invite link:', error);
+      reportError(error, { component: 'TeamPage', action: 'revokeInviteLink' });
     } finally {
       setRevokingId(null);
     }
@@ -192,7 +193,7 @@ export default function TeamPage() {
       await apiClient.delete(`/api/team/invitations/${id}`);
       setPendingInvitations((prev) => prev.filter((inv) => inv.id !== id));
     } catch (error) {
-      console.error('Error revoking invitation:', error);
+      reportError(error, { component: 'TeamPage', action: 'revokeInvitation' });
     } finally {
       setRevokingInvitationId(null);
     }
@@ -206,7 +207,7 @@ export default function TeamPage() {
       await apiClient.put(`/api/team/members/${id}/role`, { role: newRole });
       await fetchMembers();
     } catch (error) {
-      console.error('Error updating member role:', error);
+      reportError(error, { component: 'TeamPage', action: 'updateMemberRole' });
     } finally {
       setUpdatingRoleId(null);
     }

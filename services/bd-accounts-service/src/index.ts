@@ -1,4 +1,4 @@
-import { createServiceApp } from '@getsale/service-core';
+import { createServiceApp, ServiceHttpClient } from '@getsale/service-core';
 import { RedisClient } from '@getsale/utils';
 import { TelegramManager } from './telegram';
 import { accountsRouter } from './routes/accounts';
@@ -6,24 +6,38 @@ import { authRouter } from './routes/auth';
 import { syncRouter } from './routes/sync';
 import { messagingRouter } from './routes/messaging';
 import { mediaRouter } from './routes/media';
+import { internalBdAccountsRouter } from './routes/internal';
+
+const MESSAGING_SERVICE_URL = process.env.MESSAGING_SERVICE_URL || 'http://localhost:3003';
 
 async function main() {
-  const ctx = await createServiceApp({ name: 'bd-accounts-service', port: 3007 });
+  let telegramManager: TelegramManager;
+  const ctx = await createServiceApp({
+    name: 'bd-accounts-service',
+    port: 3007,
+    onShutdown: async () => {
+      await telegramManager?.shutdown();
+    },
+  });
   const { pool, rabbitmq, log } = ctx;
 
   const redisUrl = process.env.REDIS_URL;
   const redis = redisUrl ? new RedisClient(redisUrl) : null;
 
-  const telegramManager = new TelegramManager(pool, rabbitmq, redis, log);
+  const messagingClient = new ServiceHttpClient(
+    { baseUrl: MESSAGING_SERVICE_URL, name: 'messaging-service', retries: 2 },
+    log
+  );
+  telegramManager = new TelegramManager(pool, rabbitmq, redis, log, messagingClient);
 
-  process.on('unhandledRejection', (reason: any) => {
-    if (reason?.message?.includes('builder.resolve is not a function') ||
-        reason?.message?.includes('builder.resolve') ||
-        reason?.stack?.includes('builder.resolve')) {
+  process.on('unhandledRejection', (reason: unknown) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    if (msg?.includes?.('builder.resolve') || stack?.includes?.('builder.resolve')) {
       return;
     }
-    if (reason?.message === 'TIMEOUT' || reason?.message?.includes?.('TIMEOUT')) {
-      if (reason?.stack?.includes('updates.js')) {
+    if (msg === 'TIMEOUT' || String(msg).includes('TIMEOUT')) {
+      if (stack?.includes('updates.js')) {
         telegramManager.scheduleReconnectAllAfterTimeout();
         log.warn({ message: 'Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection' });
       }
@@ -32,37 +46,28 @@ async function main() {
     log.error({ message: 'Unhandled promise rejection', error: String(reason) });
   });
 
-  process.on('uncaughtException', (error: Error) => {
-    if (error.message?.includes('builder.resolve is not a function') ||
-        error.message?.includes('builder.resolve') ||
-        error.stack?.includes('builder.resolve')) {
+  process.on('uncaughtException', (error: unknown) => {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err.message?.includes('builder.resolve') ||
+        err.message?.includes('builder.resolve') ||
+        err.stack?.includes('builder.resolve')) {
       return;
     }
-    if (error.message === 'TIMEOUT' || error.message?.includes?.('TIMEOUT')) {
-      telegramManager.scheduleReconnectAllAfterTimeout();
-      log.warn({ message: 'Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection' });
+    if (err.message === 'TIMEOUT' || err.message?.includes?.('TIMEOUT')) {
+      if (err.stack?.includes('updates.js')) {
+        telegramManager.scheduleReconnectAllAfterTimeout();
+        log.warn({ message: 'Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection' });
+      }
       return;
     }
-    log.error({ message: 'Uncaught exception', error: error.message, stack: error.stack });
-  });
-
-  process.on('SIGTERM', async () => {
-    log.info({ message: 'SIGTERM received, shutting down gracefully...' });
-    await telegramManager.shutdown();
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    log.info({ message: 'SIGINT received, shutting down gracefully...' });
-    await telegramManager.shutdown();
-    process.exit(0);
+    log.error({ message: 'Uncaught exception', error: err.message, stack: err.stack });
   });
 
   telegramManager.initializeActiveAccounts().catch((error: unknown) => {
     log.error({ message: 'Failed to initialize active accounts', error: String(error) });
   });
 
-  const deps = { pool, rabbitmq, log, telegramManager };
+  const deps = { pool, rabbitmq, log, telegramManager, messagingClient };
 
   // Auth (literal paths) and media (/:id/avatar, /:id/chats/:chatId/avatar) before accounts (/:id)
   ctx.mount('/api/bd-accounts', authRouter(deps));
@@ -70,6 +75,7 @@ async function main() {
   ctx.mount('/api/bd-accounts', accountsRouter(deps));
   ctx.mount('/api/bd-accounts', syncRouter(deps));
   ctx.mount('/api/bd-accounts', messagingRouter(deps));
+  ctx.mount('/internal', internalBdAccountsRouter({ pool, log }));
 
   ctx.start();
 }

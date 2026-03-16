@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Button } from '@/components/ui/Button';
 import { apiClient } from '@/lib/api/client';
+import { reportError } from '@/lib/error-reporter';
 
 type PeriodKey = 'today' | 'week' | 'month' | 'year';
 
@@ -54,7 +55,7 @@ export default function AnalyticsPage() {
       setPipelineValue(Array.isArray(pipelineRes.data) ? pipelineRes.data : []);
       setTeamPerformance(Array.isArray(teamRes.data) ? teamRes.data : []);
     } catch (error) {
-      console.error('Error fetching analytics:', error);
+      reportError(error, { component: 'AnalyticsPage', action: 'fetchAnalytics' });
     } finally {
       setLoading(false);
     }

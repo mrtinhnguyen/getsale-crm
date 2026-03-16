@@ -9,6 +9,7 @@ import {
   type BDAccountTelegramUpdateEvent,
 } from '@getsale/events';
 import { getMessageText } from '../telegram-serialize';
+import { getErrorMessage } from '../helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 import type { MessageHandler } from './message-handler';
 import type { MessageDb } from './message-db';
@@ -61,7 +62,7 @@ export class EventHandlerSetup {
           },
           new Raw({ func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
 
       // UpdateShortMessage / UpdateShortChatMessage
       try {
@@ -70,10 +71,11 @@ export class EventHandlerSetup {
             try {
               if (!client.connected) return;
               await this.messageHandler.handleShortMessageUpdate(update, accountId, organizationId);
-            } catch (err: any) {
-              if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
-              if (err?.message?.includes('builder.resolve')) return;
-              this.log.error({ message: `Short message handler error for ${accountId}`, error: err?.message || String(err) });
+            } catch (err: unknown) {
+              const msg = getErrorMessage(err);
+              if (msg === 'TIMEOUT' || msg.includes('TIMEOUT')) return;
+              if (msg.includes('builder.resolve')) return;
+              this.log.error({ message: `Short message handler error for ${accountId}`, error: msg });
             }
           },
           new Raw({
@@ -86,13 +88,14 @@ export class EventHandlerSetup {
                   return typeof text === 'string' && text.length > 0;
                 }
                 return false;
-              } catch (_) {
+              } catch (err) {
+                this.log.debug({ message: 'UpdateShort filter check failed', accountId, error: getErrorMessage(err) });
                 return false;
               }
             },
           })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
 
       // UpdateNewMessage / UpdateNewChannelMessage
       try {
@@ -154,17 +157,20 @@ export class EventHandlerSetup {
               if (message && (message.className === 'Message' || message instanceof Api.Message)) {
                 await this.messageHandler.handleNewMessage(message, accountId, organizationId);
               }
-            } catch (err: any) {
-              if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
-              if (err?.message?.includes('builder.resolve')) return;
-              this.log.error({ message: `NewMessage(incoming) handler error for ${accountId}`, error: err?.message || String(err) });
+            } catch (err: unknown) {
+              const msg = getErrorMessage(err);
+              if (msg === 'TIMEOUT' || msg.includes('TIMEOUT')) return;
+              if (msg.includes('builder.resolve')) return;
+              this.log.error({ message: `NewMessage(incoming) handler error for ${accountId}`, error: msg });
             }
           },
           new NewMessage({ incoming: true })
         );
         this.log.info({ message: `NewMessage(incoming) handler registered for account ${accountId}` });
-      } catch (err: any) {
-        if (err?.message?.includes('builder.resolve') || err?.stack?.includes('builder.resolve')) {
+      } catch (err: unknown) {
+        const msg = getErrorMessage(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        if (msg.includes('builder.resolve') || (stack && stack.includes('builder.resolve'))) {
           this.log.warn({ message: `Could not set up NewMessage(incoming) handler for ${accountId}` });
         }
       }
@@ -184,22 +190,25 @@ export class EventHandlerSetup {
               if (message && (message.className === 'Message' || message instanceof Api.Message)) {
                 await this.messageHandler.handleNewMessage(message, accountId, organizationId);
               }
-            } catch (err: any) {
-              if (err?.message === 'TIMEOUT' || err?.message?.includes('TIMEOUT')) return;
-              if (err?.message?.includes('builder.resolve')) return;
-              this.log.error({ message: `NewMessage(outgoing) handler error for ${accountId}`, error: err?.message || String(err) });
+            } catch (err: unknown) {
+              const msg = getErrorMessage(err);
+              if (msg === 'TIMEOUT' || msg.includes('TIMEOUT')) return;
+              if (msg.includes('builder.resolve')) return;
+              this.log.error({ message: `NewMessage(outgoing) handler error for ${accountId}`, error: msg });
             }
           },
           new NewMessage({ incoming: false })
         );
         this.log.info({ message: `NewMessage(outgoing) handler registered for account ${accountId}` });
-      } catch (err: any) {
-        if (err?.message?.includes('builder.resolve') || err?.stack?.includes('builder.resolve')) {
+      } catch (err: unknown) {
+        const msg = getErrorMessage(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        if (msg.includes('builder.resolve') || (stack && stack.includes('builder.resolve'))) {
           this.log.warn({ message: `Could not set up NewMessage(outgoing) handler for ${accountId}` });
         }
       }
 
-      // UpdateDeleteMessages
+      // UpdateDeleteMessages — A1 Stage 2: delete via MessageDb (messaging internal API or direct DB)
       try {
         client.addEventHandler(
           async (event: any) => {
@@ -207,12 +216,8 @@ export class EventHandlerSetup {
               if (!client.connected) return;
               const ids = event?.messages ?? [];
               if (!Array.isArray(ids) || ids.length === 0) return;
-              const rows = await this.pool.query(
-                'SELECT id, organization_id, channel_id, telegram_message_id FROM messages WHERE bd_account_id = $1 AND telegram_message_id = ANY($2::bigint[])',
-                [accountId, ids]
-              );
-              for (const row of rows.rows) {
-                await this.pool.query('DELETE FROM messages WHERE id = $1', [row.id]);
+              const deleted = await this.messageDb.deleteByTelegram({ bdAccountId: accountId, organizationId, telegramMessageIds: ids });
+              for (const row of deleted) {
                 const ev: MessageDeletedEvent = {
                   id: randomUUID(),
                   type: EventType.MESSAGE_DELETED,
@@ -222,9 +227,10 @@ export class EventHandlerSetup {
                 };
                 await this.rabbitmq.publishEvent(ev);
               }
-            } catch (err: any) {
-              if (err?.message?.includes('builder.resolve')) return;
-              this.log.error({ message: `UpdateDeleteMessages handler error for ${accountId}`, error: err?.message });
+            } catch (err: unknown) {
+              const msg = getErrorMessage(err);
+              if (msg?.includes('builder.resolve')) return;
+              this.log.error({ message: `UpdateDeleteMessages handler error for ${accountId}`, error: msg });
             }
           },
           new Raw({
@@ -232,13 +238,13 @@ export class EventHandlerSetup {
             func: () => true,
           })
         );
-      } catch (err: any) {
-        if (err?.message?.includes('builder.resolve')) {
+      } catch (err: unknown) {
+        if (getErrorMessage(err)?.includes('builder.resolve')) {
           this.log.warn({ message: `Could not set up UpdateDeleteMessages for ${accountId}` });
         }
       }
 
-      // UpdateDeleteChannelMessages
+      // UpdateDeleteChannelMessages — A1 Stage 2: delete via MessageDb
       try {
         const UpdateDeleteChannelMessages = (Api as any).UpdateDeleteChannelMessages;
         if (UpdateDeleteChannelMessages) {
@@ -250,12 +256,13 @@ export class EventHandlerSetup {
                 const ids = event?.messages ?? [];
                 if (channelIdRaw == null || !Array.isArray(ids) || ids.length === 0) return;
                 const channelIdStr = String(channelIdRaw);
-                const rows = await this.pool.query(
-                  'SELECT id, organization_id, channel_id, telegram_message_id FROM messages WHERE bd_account_id = $1 AND channel_id = $2 AND telegram_message_id = ANY($3::bigint[])',
-                  [accountId, channelIdStr, ids]
-                );
-                for (const row of rows.rows) {
-                  await this.pool.query('DELETE FROM messages WHERE id = $1', [row.id]);
+                const deleted = await this.messageDb.deleteByTelegram({
+                  bdAccountId: accountId,
+                  organizationId,
+                  channelId: channelIdStr,
+                  telegramMessageIds: ids,
+                });
+                for (const row of deleted) {
                   const ev: MessageDeletedEvent = {
                     id: randomUUID(),
                     type: EventType.MESSAGE_DELETED,
@@ -265,9 +272,10 @@ export class EventHandlerSetup {
                   };
                   await this.rabbitmq.publishEvent(ev);
                 }
-              } catch (err: any) {
-                if (err?.message?.includes('builder.resolve')) return;
-                this.log.error({ message: `UpdateDeleteChannelMessages handler error for ${accountId}`, error: err?.message });
+              } catch (err: unknown) {
+                const msg = getErrorMessage(err);
+                if (msg?.includes('builder.resolve')) return;
+                this.log.error({ message: `UpdateDeleteChannelMessages handler error for ${accountId}`, error: msg });
               }
             },
             new Raw({
@@ -276,11 +284,11 @@ export class EventHandlerSetup {
             })
           );
         }
-      } catch (err: any) {
+      } catch {
         // UpdateDeleteChannelMessages may not exist in some GramJS versions
       }
 
-      // Edited message
+      // Edited message — A1 Stage 2: edit via MessageDb
       try {
         const EditTypes = [Api.UpdateEditMessage, Api.UpdateEditChannelMessage].filter(Boolean);
         if (EditTypes.length > 0) {
@@ -297,21 +305,18 @@ export class EventHandlerSetup {
                   else if (message.peerId instanceof Api.PeerChannel) channelId = String(message.peerId.channelId);
                 }
                 const content = getMessageText(message) || '';
-                const res = await this.pool.query(
-                  `UPDATE messages SET content = $1, updated_at = NOW(), telegram_entities = $2, telegram_media = $3
-                   WHERE bd_account_id = $4 AND channel_id = $5 AND telegram_message_id = $6
-                   RETURNING id, organization_id`,
-                  [
-                    content,
-                    message.entities ? JSON.stringify(message.entities) : null,
-                    message.media ? JSON.stringify((message.media as any).toJSON?.() ?? message.media) : null,
-                    accountId,
-                    channelId,
-                    message.id,
-                  ]
-                );
-                if (res.rows.length > 0) {
-                  const row = res.rows[0];
+                const telegram_entities = message.entities ? JSON.stringify(message.entities) : null;
+                const telegram_media = message.media ? JSON.stringify((message.media as any).toJSON?.() ?? message.media) : null;
+                const row = await this.messageDb.editByTelegram({
+                  bdAccountId: accountId,
+                  organizationId,
+                  channelId,
+                  telegramMessageId: message.id,
+                  content,
+                  telegram_entities,
+                  telegram_media,
+                });
+                if (row) {
                   const ev: MessageEditedEvent = {
                     id: randomUUID(),
                     type: EventType.MESSAGE_EDITED,
@@ -321,16 +326,17 @@ export class EventHandlerSetup {
                   };
                   await this.rabbitmq.publishEvent(ev);
                 }
-              } catch (err: any) {
-                if (err?.message?.includes('builder.resolve')) return;
-                this.log.error({ message: `EditedMessage handler error for ${accountId}`, error: err?.message });
+              } catch (err: unknown) {
+                const msg = getErrorMessage(err);
+                if (msg?.includes('builder.resolve')) return;
+                this.log.error({ message: `EditedMessage handler error for ${accountId}`, error: msg });
               }
             },
             new Raw({ types: EditTypes, func: () => true })
           );
         }
-      } catch (err: any) {
-        this.log.warn({ message: `Could not set up edited-message handler for ${accountId}`, error: err?.message });
+      } catch (err: unknown) {
+        this.log.warn({ message: `Could not set up edited-message handler for ${accountId}`, error: getErrorMessage(err) });
       }
 
       // Presence and other handlers
@@ -377,11 +383,11 @@ export class EventHandlerSetup {
               if (!allowed) return;
               const action = event?.action?.className ?? event?.action?.constructor?.name ?? '';
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'typing', channelId, userId: String(userId), action: action || undefined });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateUserTyping], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
 
     if (ApiAny.UpdateChatUserTyping) {
@@ -404,11 +410,11 @@ export class EventHandlerSetup {
               }
               const action = event?.action?.className ?? event?.action?.constructor?.name ?? '';
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'typing', channelId, userId, action: action || undefined });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateChatUserTyping], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
 
     if (ApiAny.UpdateUserStatus) {
@@ -422,11 +428,11 @@ export class EventHandlerSetup {
               const status = event?.status?.className ?? event?.status?.constructor?.name ?? '';
               const expires = (event?.status?.expires ?? event?.status?.until) ?? undefined;
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'user_status', userId: String(userId), status: status || undefined, expires: typeof expires === 'number' ? expires : undefined });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateUserStatus], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
 
     if (ApiAny.UpdateReadHistoryInbox) {
@@ -447,11 +453,11 @@ export class EventHandlerSetup {
               if (!allowed) return;
               const maxId = event?.maxId ?? event?.max_id ?? 0;
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'read_inbox', channelId, maxId });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateReadHistoryInbox], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
 
     if (ApiAny.UpdateReadChannelInbox) {
@@ -467,11 +473,11 @@ export class EventHandlerSetup {
               if (!allowed) return;
               const maxId = event?.maxId ?? event?.max_id ?? 0;
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'read_channel_inbox', channelId, maxId });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateReadChannelInbox], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
 
     if (ApiAny.UpdateDraftMessage) {
@@ -498,11 +504,11 @@ export class EventHandlerSetup {
                 replyToMsgId = (draft.replyTo as any)?.replyToMsgId ?? (draft as any).replyToMsgId ?? (draft as any).reply_to_msg_id;
               }
               await publish({ bdAccountId: accountId, organizationId, updateKind: 'draft', channelId, draftText: draftText || undefined, replyToMsgId });
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types: [ApiAny.UpdateDraftMessage], func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     }
   }
 
@@ -532,11 +538,11 @@ export class EventHandlerSetup {
             try {
               if (!client.connected) return;
               await handler(event);
-            } catch (_) {}
+            } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
           },
           new Raw({ types, func: () => true })
         );
-      } catch (_) {}
+      } catch (err) { this.log.debug({ message: 'Raw update handler registration or run failed', accountId, error: getErrorMessage(err) }); }
     };
 
     wrap([ApiAny.UpdateMessageID], async (event) => {

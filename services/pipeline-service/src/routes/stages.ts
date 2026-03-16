@@ -3,8 +3,30 @@ import { Pool } from 'pg';
 import { RabbitMQClient } from '@getsale/utils';
 import { EventType, Event } from '@getsale/events';
 import { Logger } from '@getsale/logger';
-import { asyncHandler, AppError, ErrorCodes } from '@getsale/service-core';
+import { asyncHandler, AppError, ErrorCodes, validate, withOrgContext } from '@getsale/service-core';
+import { z } from 'zod';
 import crypto from 'crypto';
+
+const StageCreateSchema = z.object({
+  pipelineId: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  orderIndex: z.number().int().min(0).optional(),
+  color: z.string().max(32).optional().nullable(),
+  automationRules: z.unknown().optional(),
+  entryRules: z.unknown().optional(),
+  exitRules: z.unknown().optional(),
+  allowedActions: z.unknown().optional(),
+});
+
+const StageUpdateSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  orderIndex: z.number().int().min(0).optional(),
+  color: z.string().max(32).optional().nullable(),
+  automationRules: z.unknown().optional(),
+  entryRules: z.unknown().optional(),
+  exitRules: z.unknown().optional(),
+  allowedActions: z.unknown().optional(),
+});
 
 interface Deps {
   pool: Pool;
@@ -32,27 +54,30 @@ export function stagesRouter({ pool, rabbitmq, log }: Deps): Router {
     res.json(result.rows);
   }));
 
-  router.post('/', asyncHandler(async (req, res) => {
+  router.post('/', validate(StageCreateSchema), asyncHandler(async (req, res) => {
     const { id: userId, organizationId } = req.user;
     const { pipelineId, name, orderIndex, color, automationRules, entryRules, exitRules, allowedActions } = req.body;
 
-    const result = await pool.query(
-      `INSERT INTO stages (pipeline_id, organization_id, name, order_index, color, automation_rules, entry_rules, exit_rules, allowed_actions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [pipelineId, organizationId, name, orderIndex, color,
-       JSON.stringify(automationRules || []), JSON.stringify(entryRules || []),
-       JSON.stringify(exitRules || []), JSON.stringify(allowedActions || [])]
-    );
+    const row = await withOrgContext(pool, organizationId, async (client) => {
+      const result = await client.query(
+        `INSERT INTO stages (pipeline_id, organization_id, name, order_index, color, automation_rules, entry_rules, exit_rules, allowed_actions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [pipelineId, organizationId, name, orderIndex, color,
+         JSON.stringify(automationRules || []), JSON.stringify(entryRules || []),
+         JSON.stringify(exitRules || []), JSON.stringify(allowedActions || [])]
+      );
+      return result.rows[0];
+    });
 
     await rabbitmq.publishEvent({
       id: crypto.randomUUID(), type: EventType.STAGE_CREATED, timestamp: new Date(),
-      organizationId, userId, data: { stageId: result.rows[0].id, pipelineId },
+      organizationId, userId, correlationId: req.correlationId, data: { stageId: (row as { id: string }).id, pipelineId },
     } as Event);
 
-    res.json(result.rows[0]);
+    res.json(row);
   }));
 
-  router.put('/:id', asyncHandler(async (req, res) => {
+  router.put('/:id', validate(StageUpdateSchema), asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const { name, orderIndex, color, automationRules, entryRules, exitRules, allowedActions } = req.body;
@@ -75,9 +100,11 @@ export function stagesRouter({ pool, rabbitmq, log }: Deps): Router {
     if (params.length === 0) return res.json(existing.rows[0]);
 
     params.push(id, organizationId);
-    const result = await pool.query(
-      `UPDATE stages SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
-      params
+    const result = await withOrgContext(pool, organizationId, (client) =>
+      client.query(
+        `UPDATE stages SET ${updates.join(', ')} WHERE id = $${idx} AND organization_id = $${idx + 1} RETURNING *`,
+        params
+      )
     );
     res.json(result.rows[0]);
   }));
@@ -90,20 +117,21 @@ export function stagesRouter({ pool, rabbitmq, log }: Deps): Router {
     if (existing.rows.length === 0) throw new AppError(404, 'Stage not found', ErrorCodes.NOT_FOUND);
     const pipelineId = existing.rows[0].pipeline_id;
 
-    const leadCount = await pool.query('SELECT COUNT(*) AS cnt FROM leads WHERE stage_id = $1', [id]);
-    if (parseInt(leadCount.rows[0]?.cnt || '0', 10) > 0) {
-      const firstOther = await pool.query(
-        'SELECT id FROM stages WHERE pipeline_id = $1 AND organization_id = $2 AND id != $3 ORDER BY order_index ASC LIMIT 1',
-        [pipelineId, organizationId, id]
-      );
-      if (firstOther.rows.length > 0) {
-        await pool.query('UPDATE leads SET stage_id = $1, updated_at = NOW() WHERE stage_id = $2', [firstOther.rows[0].id, id]);
-      } else {
-        throw new AppError(400, 'Cannot delete the only stage. Add another stage first or move leads out.', ErrorCodes.BAD_REQUEST);
+    await withOrgContext(pool, organizationId, async (client) => {
+      const leadCount = await client.query('SELECT COUNT(*) AS cnt FROM leads WHERE stage_id = $1', [id]);
+      if (parseInt(leadCount.rows[0]?.cnt || '0', 10) > 0) {
+        const firstOther = await client.query(
+          'SELECT id FROM stages WHERE pipeline_id = $1 AND organization_id = $2 AND id != $3 ORDER BY order_index ASC LIMIT 1',
+          [pipelineId, organizationId, id]
+        );
+        if (firstOther.rows.length > 0) {
+          await client.query('UPDATE leads SET stage_id = $1, updated_at = NOW() WHERE stage_id = $2', [firstOther.rows[0].id, id]);
+        } else {
+          throw new AppError(400, 'Cannot delete the only stage. Add another stage first or move leads out.', ErrorCodes.BAD_REQUEST);
+        }
       }
-    }
-
-    await pool.query('DELETE FROM stages WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+      await client.query('DELETE FROM stages WHERE id = $1 AND organization_id = $2', [id, organizationId]);
+    });
     res.status(204).send();
   }));
 

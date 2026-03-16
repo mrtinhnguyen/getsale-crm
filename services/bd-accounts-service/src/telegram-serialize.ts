@@ -14,10 +14,14 @@ function toJsonSafe(value: unknown): JsonSafe | undefined {
   if (Array.isArray(value)) return value.map(toJsonSafe).filter((x): x is JsonSafe => x !== undefined) as JsonSafe[];
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
-    if (typeof (obj as any).toJSON === 'function') {
+    if (typeof (obj as { toJSON?: () => unknown }).toJSON === 'function') {
       try {
-        return (obj as any).toJSON() as JsonSafe;
-      } catch (_) {}
+        return (obj as { toJSON: () => unknown }).toJSON() as JsonSafe;
+      } catch (e) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[telegram-serialize] toJSON threw, skipping value', e);
+        }
+      }
     }
     const out: Record<string, JsonSafe> = {};
     for (const k of Object.keys(obj)) {

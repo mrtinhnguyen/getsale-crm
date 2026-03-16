@@ -99,7 +99,10 @@ describe('Companies Router', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      pool.query.mockResolvedValueOnce({ rows: [created], rowCount: 1 });
+      pool.query.mockImplementationOnce(async () => ({}));
+      pool.query.mockImplementationOnce(async () => ({}));
+      pool.query.mockImplementationOnce(async () => ({ rows: [created], rowCount: 1 }));
+      pool.query.mockImplementationOnce(async () => ({}));
 
       const res = await request(app)
         .post('/api/crm/companies')
@@ -132,8 +135,12 @@ describe('Companies Router', () => {
         name: 'Updated Name',
         updated_at: new Date().toISOString(),
       };
+      // withOrgContext: BEGIN, set_config, SELECT (existing), UPDATE (updated), COMMIT
+      pool.query.mockImplementationOnce(async () => ({}));
+      pool.query.mockImplementationOnce(async () => ({}));
       pool.query.mockImplementationOnce(async () => ({ rows: [existing], rowCount: 1 }));
       pool.query.mockImplementationOnce(async () => ({ rows: [updated], rowCount: 1 }));
+      pool.query.mockImplementationOnce(async () => ({}));
 
       const res = await request(app)
         .put(`/api/crm/companies/${companyId}`)
@@ -146,7 +153,10 @@ describe('Companies Router', () => {
     });
 
     it('returns 404 when company not found', async () => {
-      pool.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      pool.query.mockImplementationOnce(async () => ({}));
+      pool.query.mockImplementationOnce(async () => ({}));
+      pool.query.mockImplementationOnce(async () => ({ rows: [], rowCount: 0 }));
+      pool.query.mockImplementationOnce(async () => ({}));
 
       const res = await request(app)
         .put('/api/crm/companies/55555555-5555-5555-5555-555555555555')

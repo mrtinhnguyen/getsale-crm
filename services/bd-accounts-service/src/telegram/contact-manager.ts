@@ -1,6 +1,7 @@
 // @ts-nocheck — GramJS types are incomplete
 import { Api } from 'telegram';
 import type { Pool } from 'pg';
+import { getErrorMessage } from '../helpers';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 
 /**
@@ -67,7 +68,9 @@ export class ContactManager {
         [organizationId, telegramId, firstName || '', lastName, username, phone, bio, premium]
       );
       if (insert.rows.length > 0) return insert.rows[0].id;
-    } catch (_) {}
+    } catch (err) {
+      this.log.warn({ message: 'upsertContactFromTelegramUser insert failed', organizationId, telegramId, error: getErrorMessage(err) });
+    }
     const again = await this.pool.query(
       'SELECT id FROM contacts WHERE telegram_id = $1 AND organization_id = $2 LIMIT 1',
       [telegramId, organizationId]
@@ -138,9 +141,10 @@ export class ContactManager {
         bio,
         premium,
       });
-    } catch (e: any) {
-      if (e?.message !== 'TIMEOUT' && !e?.message?.includes('Could not find')) {
-        this.log.warn({ message: "getEntity for contact enrichment", error: e?.message });
+    } catch (e: unknown) {
+      const msg = getErrorMessage(e);
+      if (msg !== 'TIMEOUT' && !msg.includes('Could not find')) {
+        this.log.warn({ message: "getEntity for contact enrichment", error: msg });
       }
       return this.ensureContactForTelegramId(organizationId, telegramId);
     }
@@ -221,8 +225,8 @@ export class ContactManager {
         await this.ensureContactEnrichedFromTelegram(organizationId, accountId, tid, { skipGetFullUser: true });
         enriched++;
         if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-      } catch (e: any) {
-        this.log.warn({ message: 'enrichContactsForAccountSyncChats single', telegramId: tid, error: e?.message });
+      } catch (e: unknown) {
+        this.log.warn({ message: 'enrichContactsForAccountSyncChats single', telegramId: tid, error: getErrorMessage(e) });
       }
     }
     return { enriched };
