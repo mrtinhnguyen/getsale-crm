@@ -379,6 +379,7 @@ services:
       - RABBITMQ_URL=amqp://getsale:${RABBITMQ_PASSWORD:-set_me_in_env}@rabbitmq:5672
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}
       - MESSAGING_SERVICE_URL=http://messaging-service:3003
+      - BD_ACCOUNTS_SERVICE_URL=http://bd-accounts-service:3007
       - PIPELINE_SERVICE_URL=http://pipeline-service:3008
     depends_on:
       postgres: { condition: service_healthy }
