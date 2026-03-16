@@ -3,7 +3,6 @@
 FROM node:22-alpine
 
 ARG SERVICE_PATH=services/api-gateway
-ENV NODE_ENV=production
 WORKDIR /app
 
 # Copy root and workspace config
@@ -11,8 +10,9 @@ COPY package*.json ./
 COPY shared/ ./shared/
 COPY ${SERVICE_PATH}/package*.json ./${SERVICE_PATH}/
 
-# Install all dependencies including dev (tsc etc.) for build; NODE_ENV=production skips dev by default
-RUN npm install --include=dev
+# Install with devDependencies for build (tsc). NODE_ENV=development so devDependencies install reliably in CI.
+ENV NODE_ENV=development
+RUN npm install
 
 # Build shared packages in dependency order: types -> events -> utils -> logger -> service-core
 RUN npm run build --workspace=shared/types && \
@@ -29,6 +29,7 @@ RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
 
 WORKDIR /app/${SERVICE_PATH}
+ENV NODE_ENV=production
 USER appuser
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
