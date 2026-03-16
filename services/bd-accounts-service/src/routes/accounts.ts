@@ -329,16 +329,22 @@ export function accountsRouter({ pool, rabbitmq, log, telegramManager, messaging
     );
     await telegramManager.disconnectAccount(id);
 
-    // S2/A1: messaging-service owns messages; orphan via internal API instead of direct UPDATE
-    await messagingClient.post(
+    // S2/A1: orphan messages so FK allows deleting bd_accounts. Prefer messaging-service API; fallback to direct UPDATE when messaging is down (e.g. circuit breaker).
+    const orphanOk = await messagingClient.post(
       '/internal/messages/orphan-by-bd-account',
       { bdAccountId: id },
       undefined,
       { organizationId: user.organizationId }
-    ).catch((err: unknown) => {
-      log.warn({ message: 'Messaging orphan-by-bd-account failed (proceeding with account delete)', bdAccountId: id, error: String(err) });
-      // Proceed: account and sync tables will be removed; messages remain linked to deleted account until cleaned up
+    ).then(() => true).catch((err: unknown) => {
+      log.warn({ message: 'Messaging orphan-by-bd-account failed, orphaning messages locally', bdAccountId: id, error: String(err) });
+      return false;
     });
+    if (!orphanOk) {
+      await pool.query(
+        'UPDATE messages SET bd_account_id = NULL WHERE bd_account_id = $1 AND organization_id = $2',
+        [id, user.organizationId]
+      );
+    }
 
     await withOrgContext(pool, user.organizationId, async (client) => {
       await client.query('DELETE FROM bd_account_sync_chat_folders WHERE bd_account_id = $1', [id]);
