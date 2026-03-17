@@ -586,6 +586,7 @@ services:
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - MESSAGING_SERVICE_URL=http://messaging-service:3003
       - PIPELINE_SERVICE_URL=http://pipeline-service:3008
+      - BD_ACCOUNTS_SERVICE_URL=http://bd-accounts-service:3007
     depends_on:
       postgres:
         condition: service_healthy

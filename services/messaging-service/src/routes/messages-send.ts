@@ -149,9 +149,19 @@ export function registerSendRoutes(router: Router, deps: MessagesRouterDeps): vo
         ]);
         const is413 = (error instanceof ServiceCallError && error.statusCode === 413)
           || (errMsg.toLowerCase().includes('too large') || errMsg.includes('2 GB'));
-        return res.status(is413 ? 413 : 500).json({
-          error: is413 ? 'File too large' : 'Internal server error',
-          message: is413 ? 'File too large' : 'Failed to send message',
+        if (is413) {
+          return res.status(413).json({ error: 'File too large', message: 'File too large' });
+        }
+        // Propagate 4xx from bd-accounts (e.g. 400 "BD account is not connected") so clients get a proper error and circuit breaker is not tripped
+        if (error instanceof ServiceCallError && error.statusCode >= 400 && error.statusCode < 500) {
+          return res.status(error.statusCode).json({
+            error: errMsg || 'Bad request',
+            message: errMsg || 'Failed to send message',
+          });
+        }
+        return res.status(500).json({
+          error: 'Internal server error',
+          message: 'Failed to send message',
         });
       }
     }

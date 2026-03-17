@@ -397,10 +397,6 @@ export class MessageSync {
     );
 
     const client = clientInfo.client;
-    const peerIdNum = Number(chatId);
-    const peerInput = Number.isNaN(peerIdNum) ? chatId : peerIdNum;
-    const peer = await client.getInputEntity(peerInput);
-
     let offsetId = 0;
     let offsetDate = 0;
     if (oldestRow.rows.length > 0) {
@@ -419,6 +415,8 @@ export class MessageSync {
     const limit = 100;
 
     try {
+      // Use string chatId so GramJS resolves from session cache; if entity not in cache, return empty instead of 503
+      const peer = await client.getInputEntity(chatId);
       const result = await client.invoke(
         new Api.messages.GetHistory({
           peer,
@@ -449,22 +447,27 @@ export class MessageSync {
         if (!hasText && !msg.media) continue;
         let senderId = '';
         if (msg.fromId instanceof Api.PeerUser) senderId = String(msg.fromId.userId);
-        const contactId = await this.contactManager.ensureContactEnrichedFromTelegram(organizationId, accountId, senderId || chatId);
-        const direction = (msg as any).out === true ? MessageDirection.OUTBOUND : MessageDirection.INBOUND;
-        const serialized = serializeMessage(msg);
-        await this.messageDb.saveMessageToDb({
-          organizationId,
-          bdAccountId: accountId,
-          contactId,
-          channel: MessageChannel.TELEGRAM,
-          channelId: chatId,
-          direction,
-          status: MessageStatus.DELIVERED,
-          unread: false,
-          serialized,
-          metadata: { senderId, hasMedia: !!msg.media },
-        });
-        added++;
+        try {
+          const contactId = await this.contactManager.ensureContactEnrichedFromTelegram(organizationId, accountId, senderId || chatId);
+          const direction = (msg as any).out === true ? MessageDirection.OUTBOUND : MessageDirection.INBOUND;
+          const serialized = serializeMessage(msg);
+          await this.messageDb.saveMessageToDb({
+            organizationId,
+            bdAccountId: accountId,
+            contactId,
+            channel: MessageChannel.TELEGRAM,
+            channelId: chatId,
+            direction,
+            status: MessageStatus.DELIVERED,
+            unread: false,
+            serialized,
+            metadata: { senderId, hasMedia: !!msg.media },
+          });
+          added++;
+        } catch (saveErr: unknown) {
+          const msgErr = saveErr instanceof Error ? saveErr.message : String(saveErr);
+          this.log.warn({ message: 'fetchOlderMessagesFromTelegram: skip message (save failed)', chatId, accountId, error: msgErr });
+        }
       }
 
       const exhausted = list.length === 0 || list.length < limit;
@@ -480,8 +483,10 @@ export class MessageSync {
       }
       return { added, exhausted };
     } catch (err: any) {
-      this.log.warn({ message: `fetchOlderMessagesFromTelegram failed for ${accountId}/${chatId}`, error: err?.message });
-      throw err;
+      const msg = err?.message ?? String(err);
+      this.log.warn({ message: `fetchOlderMessagesFromTelegram failed for ${accountId}/${chatId}`, error: msg });
+      // Return empty so caller gets 200 and does not retry (e.g. entity not in cache, messaging down)
+      return { added: 0, exhausted: true };
     }
   }
 }

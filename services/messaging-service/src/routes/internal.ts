@@ -21,13 +21,25 @@ const EnsureConversationSchema = z.object({
   contactId: z.string().uuid().nullable(),
 });
 
+/** Accept string or number from bd-accounts (SerializedTelegramMessage uses string); normalize to number for DB. */
+const telegramIdSchema = z
+  .union([z.string(), z.number()])
+  .optional()
+  .nullable()
+  .transform((v) => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return Number.isNaN(v) ? null : v;
+    const n = parseInt(String(v), 10);
+    return Number.isNaN(n) ? null : n;
+  });
+
 const SerializedTelegramSchema = z.object({
-  telegram_message_id: z.number().nullable().optional(),
+  telegram_message_id: telegramIdSchema,
   telegram_date: z.union([z.string(), z.date(), z.number()]).nullable().optional(),
   content: z.string(),
   telegram_entities: z.unknown().nullable().optional(),
   telegram_media: z.unknown().nullable().optional(),
-  reply_to_telegram_id: z.number().nullable().optional(),
+  reply_to_telegram_id: telegramIdSchema,
   telegram_extra: z.record(z.unknown()).optional(),
 });
 

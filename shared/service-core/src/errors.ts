@@ -10,13 +10,13 @@ export class AppError extends Error {
     Object.setPrototypeOf(this, AppError.prototype);
   }
 
-  /** S13: In production, omit validation/details from client response; details are logged server-side. */
+  /** Include details for VALIDATION so client sees which field failed; other details only in non-production. */
   toJSON(): { error: string; code?: string; details?: unknown } {
     const payload: { error: string; code?: string; details?: unknown } = {
       error: this.message,
       code: this.code,
     };
-    if (this.details != null && process.env.NODE_ENV !== 'production') {
+    if (this.details != null && (this.code === 'VALIDATION' || process.env.NODE_ENV !== 'production')) {
       payload.details = this.details;
     }
     return payload;

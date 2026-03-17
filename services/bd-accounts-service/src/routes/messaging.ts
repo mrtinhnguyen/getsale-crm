@@ -94,6 +94,17 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       message = await telegramManager.sendMessage(id, chatId, typeof text === 'string' ? text : '', { replyTo });
     }
 
+    const chatIdStr = String(chatId).trim();
+    if (chatIdStr) {
+      const peerType = /^\d+$/.test(chatIdStr) && parseInt(chatIdStr, 10) > 0 ? 'user' : 'chat';
+      await pool.query(
+        `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
+         VALUES ($1, $2, '', $3, false, NULL)
+         ON CONFLICT (bd_account_id, telegram_chat_id) DO NOTHING`,
+        [id, chatIdStr, peerType]
+      );
+    }
+
     const serialized = serializeMessage(message);
     const payload: Record<string, unknown> = {
       success: true,
@@ -128,6 +139,13 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       try {
         await telegramManager.sendMessage(id, chatId, text, {});
         sent++;
+        const peerType = /^\d+$/.test(chatId) && parseInt(chatId, 10) > 0 ? 'user' : 'chat';
+        await pool.query(
+          `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
+           VALUES ($1, $2, '', $3, false, NULL)
+           ON CONFLICT (bd_account_id, telegram_chat_id) DO NOTHING`,
+          [id, chatId, peerType]
+        );
       } catch (err: any) {
         failed.push({ channelId: chatId, error: err?.message || String(err) });
       }
@@ -308,12 +326,17 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
 
     const account = await getAccountOr404<{ id: string; organization_id: string }>(pool, accountId, organizationId, 'id, organization_id');
 
-    const { added, exhausted } = await telegramManager.fetchOlderMessagesFromTelegram(
-      accountId,
-      account.organization_id,
-      chatId
-    );
-    res.json({ added, exhausted });
+    try {
+      const { added, exhausted } = await telegramManager.fetchOlderMessagesFromTelegram(
+        accountId,
+        account.organization_id,
+        chatId
+      );
+      res.json({ added, exhausted });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new AppError(503, message, ErrorCodes.SERVICE_UNAVAILABLE);
+    }
   }));
 
   return router;

@@ -168,7 +168,18 @@ export class ServiceHttpClient {
           );
         }
 
-        const data = await res.json() as T;
+        const text = await res.text();
+        if (res.status === 204 || text.trim() === '') {
+          this.circuitBreaker.recordSuccess();
+          return undefined as T;
+        }
+        let data: T;
+        try {
+          data = JSON.parse(text) as T;
+        } catch {
+          this.circuitBreaker.recordSuccess();
+          return undefined as T;
+        }
         this.circuitBreaker.recordSuccess();
         return data;
       } catch (err: unknown) {

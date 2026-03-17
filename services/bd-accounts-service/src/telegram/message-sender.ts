@@ -29,22 +29,43 @@ export class MessageSender {
       throw new Error(`Account ${accountId} is not connected`);
     }
 
-    try {
-      const message = await clientInfo.client.sendMessage(chatId, {
-        message: text,
-        ...(opts.replyTo != null ? { replyTo: opts.replyTo } : {}),
-      });
+    const client = clientInfo.client;
+    const params = {
+      message: text,
+      ...(opts.replyTo != null ? { replyTo: opts.replyTo } : {}),
+    };
 
+    try {
+      const message = await client.sendMessage(chatId, params);
       clientInfo.lastActivity = new Date();
       await this.pool.query(
         'UPDATE bd_accounts SET last_activity = NOW() WHERE id = $1',
         [accountId]
       );
-
       return message;
-    } catch (error: unknown) {
-      this.log.error({ message: `Error sending message`, error: getErrorMessage(error) });
-      throw error;
+    } catch (firstError: unknown) {
+      const errMsg = getErrorMessage(firstError);
+      const isEntityNotFound =
+        typeof errMsg === 'string' &&
+        (errMsg.includes('Could not find the input entity') || errMsg.includes('input entity'));
+      if (isEntityNotFound) {
+        try {
+          await client.getDialogs({ limit: 100 });
+          const message = await client.sendMessage(chatId, params);
+          clientInfo.lastActivity = new Date();
+          await this.pool.query(
+            'UPDATE bd_accounts SET last_activity = NOW() WHERE id = $1',
+            [accountId]
+          );
+          this.log.info({ message: 'sendMessage succeeded after getDialogs cache prime', accountId, chatId });
+          return message;
+        } catch (retryError: unknown) {
+          this.log.error({ message: `Error sending message (after cache prime)`, error: getErrorMessage(retryError) });
+          throw retryError;
+        }
+      }
+      this.log.error({ message: `Error sending message`, error: errMsg });
+      throw firstError;
     }
   }
 
@@ -96,16 +117,21 @@ export class MessageSender {
     }
     const client = clientInfo.client;
     const ApiAny = Api as any;
-    const peer = await client.getInputEntity(chatId);
-    const replyTo = opts.replyToMsgId != null ? { replyToMsgId: opts.replyToMsgId } : undefined;
-    await client.invoke(
-      new ApiAny.messages.SaveDraft({
-        peer,
-        message: text || '',
-        ...(replyTo ? { replyTo } : {}),
-      })
-    );
-    clientInfo.lastActivity = new Date();
+    try {
+      const peer = await client.getInputEntity(chatId);
+      const replyTo = opts.replyToMsgId != null ? { replyToMsgId: opts.replyToMsgId } : undefined;
+      await client.invoke(
+        new ApiAny.messages.SaveDraft({
+          peer,
+          message: text || '',
+          ...(replyTo ? { replyTo } : {}),
+        })
+      );
+      clientInfo.lastActivity = new Date();
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.log.warn({ message: 'saveDraft failed (entity not in cache or Telegram error)', accountId, chatId, error: msg });
+    }
   }
 
   async forwardMessage(

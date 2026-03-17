@@ -24,18 +24,23 @@ export class MessageDb {
     contactId: string | null;
   }): Promise<void> {
     if (this.messagingClient) {
-      await this.messagingClient.post(
-        '/internal/conversations/ensure',
-        {
-          organizationId: params.organizationId,
-          bdAccountId: params.bdAccountId,
-          channel: params.channel,
-          channelId: params.channelId,
-          contactId: params.contactId,
-        },
-        undefined,
-        { organizationId: params.organizationId }
-      );
+      try {
+        await this.messagingClient.post(
+          '/internal/conversations/ensure',
+          {
+            organizationId: params.organizationId,
+            bdAccountId: params.bdAccountId,
+            channel: params.channel,
+            channelId: params.channelId,
+            contactId: params.contactId,
+          },
+          undefined,
+          { organizationId: params.organizationId }
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.warn({ message: 'ensureConversation (messaging) failed, continuing', error: msg, channelId: params.channelId });
+      }
       return;
     }
     await this.pool.query(
@@ -76,6 +81,14 @@ export class MessageDb {
       await this.ensureConversation({ organizationId, bdAccountId, channel, channelId, contactId });
       const reactionsFromTg = reactionsFromTelegramExtra(serialized.telegram_extra);
       const ourReactionsFromTg = ourReactionsFromTelegramExtra(serialized.telegram_extra);
+      const telegramMsgId =
+        serialized.telegram_message_id != null && String(serialized.telegram_message_id).trim() !== ''
+          ? parseInt(String(serialized.telegram_message_id), 10)
+          : null;
+      const replyToTgId =
+        serialized.reply_to_telegram_id != null && String(serialized.reply_to_telegram_id).trim() !== ''
+          ? parseInt(String(serialized.reply_to_telegram_id), 10)
+          : null;
       const res = await this.messagingClient.post<{ id: string }>(
         '/internal/messages',
         {
@@ -88,12 +101,12 @@ export class MessageDb {
           status,
           unread,
           serialized: {
-            telegram_message_id: serialized.telegram_message_id ?? null,
+            telegram_message_id: telegramMsgId != null && !Number.isNaN(telegramMsgId) ? telegramMsgId : null,
             telegram_date: serialized.telegram_date ?? null,
             content: serialized.content ?? '',
             telegram_entities: serialized.telegram_entities ?? null,
             telegram_media: serialized.telegram_media ?? null,
-            reply_to_telegram_id: serialized.reply_to_telegram_id ?? null,
+            reply_to_telegram_id: replyToTgId != null && !Number.isNaN(replyToTgId) ? replyToTgId : null,
             telegram_extra: serialized.telegram_extra ?? {},
           },
           metadata,

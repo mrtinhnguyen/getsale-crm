@@ -1,5 +1,12 @@
 // Minimal type declarations for telegram (GramJS) - allow build to pass
+// GramJS sendMessage(entity, params) with params.message and optional params.replyTo
 declare module 'telegram' {
+  export interface SendMessageParams {
+    message: string;
+    replyTo?: number;
+    [key: string]: unknown;
+  }
+
   export class TelegramClient {
     constructor(session: unknown, apiId: number, apiHash: string, opts?: unknown);
     start(params?: unknown): Promise<void>;
@@ -11,7 +18,8 @@ declare module 'telegram' {
     getInputEntity(entity: unknown): Promise<unknown>;
     getMessages(entity: unknown, ids: unknown): Promise<unknown[]>;
     downloadMedia(message: unknown, opts?: unknown): Promise<unknown>;
-    sendMessage(entity: unknown, message: string, opts?: unknown): Promise<unknown>;
+    /** entity: peer id (string/number) or username; params: { message, replyTo? } */
+    sendMessage(entity: unknown, params: SendMessageParams): Promise<unknown>;
     addEventHandler(handler: unknown, params?: unknown): void;
     session: unknown;
     [key: string]: unknown;
@@ -28,6 +36,8 @@ declare module 'telegram' {
     const TypeMessageReplyHeader: unknown;
     const TypeMessageFwdHeader: unknown;
     const TypeMessageReactions: unknown;
+    const UpdateNewMessage: unknown;
+    const UpdateNewChannelMessage: unknown;
   }
 }
 
