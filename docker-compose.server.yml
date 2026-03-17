@@ -7,6 +7,17 @@
 # RABBITMQ_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET, INTERNAL_AUTH_SECRET. Services use
 # RABBITMQ_URL built from RABBITMQ_PASSWORD (amqp://getsale:${RABBITMQ_PASSWORD}@rabbitmq:5672).
 #
+# Required env per service (must appear in each service's environment: block or service fails at startup):
+#   api-gateway:     JWT_SECRET, INTERNAL_AUTH_SECRET, CORS_ORIGIN (prod), REDIS_URL, RABBITMQ_URL, *_SERVICE_URL
+#   auth-service:   JWT_SECRET, JWT_REFRESH_SECRET, INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL
+#   crm-service:    INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL, BD_ACCOUNTS_SERVICE_URL, CAMPAIGN_SERVICE_URL
+#   messaging:       INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL, WEBSOCKET_SERVICE_URL, BD_ACCOUNTS_SERVICE_URL, AI_SERVICE_URL
+#   websocket:       INTERNAL_AUTH_SECRET, JWT_SECRET, REDIS_URL, RABBITMQ_URL, AUTH_SERVICE_URL, CORS_ORIGIN (prod)
+#   ai-service:     INTERNAL_AUTH_SECRET, REDIS_URL, RABBITMQ_URL; OPENAI_API_KEY optional
+#   user-service:   INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL; STRIPE_* optional
+#   bd-accounts:    INTERNAL_AUTH_SECRET, SESSION_ENCRYPTION_KEY, TELEGRAM_API_ID, TELEGRAM_API_HASH, MESSAGING_SERVICE_URL (uses env_file)
+#   pipeline, automation, analytics, activity, team, campaign: INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL (if used), RABBITMQ_URL; *_SERVICE_URL as needed
+#
 # name: fixes project name so "compose down" never touches Traefik (run from /docker/getsale-crm)
 name: getsale-crm
 
@@ -209,6 +220,8 @@ services:
       - AUTH_SERVICE_URL=http://auth-service:3001
       - CORS_ORIGIN=${CORS_ORIGIN:-https://app.getsale.ai}
       - MAX_CONNECTIONS_PER_ORG=100
+      - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
     depends_on:
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
@@ -235,6 +248,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - RABBITMQ_URL=amqp://getsale:${RABBITMQ_PASSWORD:-set_me_in_env}@rabbitmq:5672
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}
     depends_on:
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
@@ -313,6 +327,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - RABBITMQ_URL=amqp://getsale:${RABBITMQ_PASSWORD:-set_me_in_env}@rabbitmq:5672
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}
+      - CRM_SERVICE_URL=http://crm-service:3002
       - PIPELINE_SERVICE_URL=http://pipeline-service:3008
     depends_on:
       postgres: { condition: service_healthy }

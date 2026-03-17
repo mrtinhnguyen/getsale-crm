@@ -961,6 +961,7 @@
     "createSharedChat": "Создать общий чат",
     "sharedChatCreated": "Общий чат создан",
     "openInTelegram": "Открыть в Telegram",
+    "sharedChatInviteLinkNotAvailable": "Ссылка-приглашение недоступна; откройте чат в Telegram",
     "markWon": "Закрыть сделку (Won)",
     "markLost": "Отметить как потеряно (Lost)",
     "dealWon": "Сделка закрыта",

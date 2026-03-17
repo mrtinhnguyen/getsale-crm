@@ -9,11 +9,12 @@ interface Deps {
 export function conversationsRouter({ pool }: Deps): Router {
   const router = Router();
 
-  // GET /new-leads — folder «Новые лиды»: lead_id != null AND first_manager_reply_at IS NULL
+  // GET /new-leads — folder «Новые лиды»: one row per lead (lead_id != null, first_manager_reply_at IS NULL), deduplicated
   router.get('/new-leads', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const result = await pool.query(
-      `SELECT conv.id AS conversation_id, conv.organization_id, conv.bd_account_id, conv.channel, conv.channel_id,
+      `SELECT DISTINCT ON (conv.lead_id)
+              conv.id AS conversation_id, conv.organization_id, conv.bd_account_id, conv.channel, conv.channel_id,
               conv.contact_id, conv.lead_id, conv.campaign_id, conv.became_lead_at, conv.last_viewed_at,
               st.name AS lead_stage_name, p.name AS lead_pipeline_name, l.stage_id,
               c.first_name, c.last_name, c.display_name, c.username, c.telegram_id,
@@ -26,10 +27,16 @@ export function conversationsRouter({ pool }: Deps): Router {
        JOIN pipelines p ON p.id = l.pipeline_id
        LEFT JOIN contacts c ON c.id = conv.contact_id
        WHERE conv.organization_id = $1 AND conv.lead_id IS NOT NULL AND conv.first_manager_reply_at IS NULL
-       ORDER BY conv.became_lead_at DESC NULLS LAST`,
+       ORDER BY conv.lead_id, conv.became_lead_at DESC NULLS LAST`,
       [organizationId]
     );
-    res.json(result.rows);
+    // Return rows in became_lead_at desc order (reorder after DISTINCT ON)
+    const rows = (result.rows as Array<{ became_lead_at: string | Date | null; [k: string]: unknown }>).sort((a, b) => {
+      const at = a.became_lead_at ? new Date(a.became_lead_at).getTime() : 0;
+      const bt = b.became_lead_at ? new Date(b.became_lead_at).getTime() : 0;
+      return bt - at;
+    });
+    res.json(rows);
   }));
 
   // PATCH /conversations/:id/view — set last_viewed_at

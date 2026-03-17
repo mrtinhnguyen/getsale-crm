@@ -54,12 +54,21 @@ export function parseRouter({ pool, log, bdAccountsClient, campaignServiceClient
 
     const name = (listName && String(listName).trim()) || `Parse ${randomUUID().slice(0, 8)}`;
     const settingsFinal = settings ?? { depth: 'standard', excludeAdmins: true };
+    // Preserve type and canGetMembers explicitly so getParseWorkList sees correct types after DB roundtrip
+    const sourcesForParams = sources.map((s: { chatId: string; title: string; type: string; canGetMembers: boolean; linkedChatId?: number; [k: string]: unknown }) => ({
+      ...s,
+      type: String(s.type ?? 'unknown'),
+      canGetMembers: Boolean(s.canGetMembers),
+      chatId: String(s.chatId ?? ''),
+      title: String(s.title ?? ''),
+      linkedChatId: s.linkedChatId != null ? Number(s.linkedChatId) : undefined,
+    }));
     const params: Record<string, unknown> = {
-      sources,
+      sources: sourcesForParams,
       settings: settingsFinal,
       accountIds,
       listName: listName?.trim() || name,
-      chats: sources.map((s: { chatId: string; title: string; type: string }) => ({
+      chats: sourcesForParams.map((s: { chatId: string; title: string; type: string }) => ({
         chatId: s.chatId,
         title: s.title,
         peerType: s.type,

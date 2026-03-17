@@ -296,24 +296,21 @@ export function LeadCardModal({ leadId, open, onClose, onLeadUpdated }: LeadCard
               </Button>
             )}
 
-            {/* Shared chat link */}
-            {context.shared_chat_created_at && (context.shared_chat_invite_link?.trim() || context.shared_chat_channel_id != null) && (
-              <a
-                href={
-                  context.shared_chat_invite_link?.trim() ||
-                  (() => {
-                    const raw = Number(context.shared_chat_channel_id);
-                    const id = Number.isNaN(raw) ? String(context.shared_chat_channel_id).replace(/^-100/, '') : String(Math.abs(raw));
-                    return `https://t.me/c/${id}`;
-                  })()
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
-              >
-                <ExternalLink className="w-4 h-4" />
-                {t('messaging.openInTelegram', 'Open in Telegram')}
-              </a>
+            {/* Shared chat link — only invite link works for private groups */}
+            {context.shared_chat_created_at && (
+              context.shared_chat_invite_link?.trim() ? (
+                <a
+                  href={context.shared_chat_invite_link.trim()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  {t('messaging.openInTelegram', 'Open in Telegram')}
+                </a>
+              ) : (
+                <span className="text-xs text-muted-foreground">{t('messaging.sharedChatInviteLinkNotAvailable', 'Invite link not available; open the chat in Telegram')}</span>
+              )
             )}
 
             {context.won_at && (

@@ -340,7 +340,7 @@ async function processParseTask(client: PoolClient, task: DiscoveryTaskRow, deps
        const PROGRESS_UPDATE_BATCH = 50;
 
        for (const u of participants) {
-          const telegramId = u.telegram_id;
+          const telegramId = String((u as Record<string, unknown>).telegram_id ?? (u as Record<string, unknown>).userId ?? (u as Record<string, unknown>).user_id ?? '').trim();
           if (!telegramId) continue;
 
           let contactId: string;
@@ -348,6 +348,9 @@ async function processParseTask(client: PoolClient, task: DiscoveryTaskRow, deps
             'SELECT id FROM contacts WHERE organization_id = $1 AND telegram_id = $2',
             [task.organization_id, telegramId]
           );
+          const firstName = (u as Record<string, unknown>).first_name ?? (u as Record<string, unknown>).firstName ?? 'Contact';
+          const lastName = (u as Record<string, unknown>).last_name ?? (u as Record<string, unknown>).lastName ?? null;
+          const username = (u as Record<string, unknown>).username ?? (u as Record<string, unknown>).user_name ?? null;
           if (existing.rows.length > 0) {
              contactId = existing.rows[0].id;
           } else {
@@ -355,7 +358,7 @@ async function processParseTask(client: PoolClient, task: DiscoveryTaskRow, deps
              await client.query(
                `INSERT INTO contacts (id, organization_id, first_name, last_name, username, telegram_id, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
-               [contactId, task.organization_id, u.first_name || 'Contact', u.last_name || null, u.username || null, telegramId]
+               [contactId, task.organization_id, (typeof firstName === 'string' ? firstName : 'Contact') || 'Contact', lastName, username, telegramId]
              );
           }
           contactIds.push(contactId);

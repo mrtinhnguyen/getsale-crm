@@ -961,6 +961,7 @@
     "createSharedChat": "Create shared chat",
     "sharedChatCreated": "Shared chat created",
     "openInTelegram": "Open in Telegram",
+    "sharedChatInviteLinkNotAvailable": "Invite link not available; open the chat in Telegram",
     "markWon": "Close deal (Won)",
     "markLost": "Mark as lost (Lost)",
     "dealWon": "Deal won",

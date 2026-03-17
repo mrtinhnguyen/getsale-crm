@@ -799,18 +799,19 @@ export class ChatSync {
         
         if (messages.length === 0) break;
 
-        const usersMap = new Map();
+        const usersMap = new Map<string, any>();
         for (const u of users) {
-           usersMap.set(String(u.id), u);
+          const id = (u as any).id ?? (u as any).userId;
+          if (id != null) usersMap.set(String(id), u);
         }
 
         for (const msg of messages) {
           const fromId = msg.fromId;
-          if (fromId && fromId.className === 'PeerUser') {
-             const uid = String(fromId.userId);
-             if (!uniqueUsers.has(uid) && usersMap.has(uid)) {
-               uniqueUsers.set(uid, usersMap.get(uid));
-             }
+          if (fromId && (fromId.className === 'PeerUser' || (fromId as any).userId != null)) {
+            const uid = String((fromId as any).userId ?? (fromId as any).user_id ?? '');
+            if (uid && !uniqueUsers.has(uid) && usersMap.has(uid)) {
+              uniqueUsers.set(uid, usersMap.get(uid));
+            }
           }
         }
         
@@ -820,12 +821,16 @@ export class ChatSync {
 
       let usersResult = Array.from(uniqueUsers.values())
         .filter((u: any) => !u.deleted && !u.bot)
-        .map((u: any) => ({
-          telegram_id: String(u.id),
-          username: u.username,
-          first_name: u.firstName,
-          last_name: u.lastName,
-        }));
+        .map((u: any) => {
+          const uid = (u as any).id ?? (u as any).userId;
+          return {
+            telegram_id: uid != null ? String(uid) : '',
+            username: (u as any).username ?? (u as any).user_name,
+            first_name: (u as any).firstName ?? (u as any).first_name,
+            last_name: (u as any).lastName ?? (u as any).last_name,
+          };
+        })
+        .filter((u) => u.telegram_id !== '');
 
       if (excludeAdmins) {
          try {

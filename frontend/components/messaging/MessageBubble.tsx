@@ -54,19 +54,10 @@ function MessageBubbleInner({
 
   const isSystemMessage = (msg.content ?? '').trim().startsWith('[System]');
   const isSharedChatCreated = isSystemMessage && (msg.content ?? '').includes('Общий чат создан');
-  const sharedChatLinkUrl =
-    isSharedChatCreated &&
-    (leadContext?.shared_chat_invite_link?.trim()
-      ? leadContext.shared_chat_invite_link.trim()
-      : leadContext?.shared_chat_channel_id != null
-        ? (() => {
-            const raw = Number(leadContext.shared_chat_channel_id);
-            const id = Number.isNaN(raw)
-              ? String(leadContext.shared_chat_channel_id).replace(/^-100/, '')
-              : String(Math.abs(raw));
-            return id ? `https://t.me/c/${id}` : null;
-          })()
-        : null);
+  // Use only invite link; t.me/c/{id} does not work for private groups
+  const sharedChatLinkUrl = isSharedChatCreated && leadContext?.shared_chat_invite_link?.trim()
+    ? leadContext.shared_chat_invite_link.trim()
+    : null;
 
   const dateSeparator = showDateSeparator && (
     <div className="flex justify-center my-4">

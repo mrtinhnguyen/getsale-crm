@@ -89,17 +89,8 @@ export function LeadCardPanelContent({
     );
   };
 
-  const sharedChatLink = (() => {
-    if (leadContext.shared_chat_invite_link?.trim()) return leadContext.shared_chat_invite_link.trim();
-    if (leadContext.shared_chat_channel_id != null) {
-      const raw = Number(leadContext.shared_chat_channel_id);
-      const id = Number.isNaN(raw)
-        ? String(leadContext.shared_chat_channel_id).replace(/^-100/, '')
-        : String(Math.abs(raw));
-      return `https://t.me/c/${id}`;
-    }
-    return null;
-  })();
+  // Use only invite link for private groups; t.me/c/{id} does not work for them
+  const sharedChatLink = leadContext.shared_chat_invite_link?.trim() || null;
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
@@ -138,20 +129,22 @@ export function LeadCardPanelContent({
 
         {/* Deal actions */}
         <div className="border-t border-border pt-3 space-y-2">
-          {leadContext.campaign != null && !leadContext.shared_chat_created_at && (
+          {!leadContext.shared_chat_created_at && (
             <Button variant="primary" size="sm" className="w-full justify-center" onClick={onCreateSharedChat}>
               {t('messaging.createSharedChat')}
             </Button>
           )}
-          {leadContext.campaign != null && leadContext.shared_chat_created_at && (
+          {leadContext.shared_chat_created_at && (
             <div className="flex flex-col gap-1.5">
               <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
                 ✓ {t('messaging.sharedChatCreated', 'Общий чат создан')}
               </div>
-              {sharedChatLink && (
+              {sharedChatLink ? (
                 <a href={sharedChatLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
                   {t('messaging.openInTelegram', 'Открыть в Telegram')}<ExternalLink className="w-3.5 h-3.5" />
                 </a>
+              ) : (
+                <span className="text-xs text-muted-foreground">{t('messaging.sharedChatInviteLinkNotAvailable', 'Ссылка-приглашение недоступна; откройте чат в Telegram')}</span>
               )}
             </div>
           )}

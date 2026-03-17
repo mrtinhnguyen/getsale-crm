@@ -148,7 +148,7 @@ export const ResolvedSourceSchema = z.object({
   username: z.string().optional(),
   chatId: z.string(),
   membersCount: z.number().optional(),
-  linkedChatId: z.number().optional(),
+  linkedChatId: z.union([z.number(), z.string().transform((s) => Number(s))]).optional(),
   canGetMembers: z.boolean(),
   canGetMessages: z.boolean(),
 });
