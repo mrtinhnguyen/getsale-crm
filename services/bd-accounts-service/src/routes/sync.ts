@@ -100,10 +100,16 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
   }));
 
   // GET /:id/dialogs-by-folders
+  // Optional ?limit=N when refresh=1: max dialogs to fetch per folder (default 3000, clamp 100–3000) to reduce event-loop load and first-response time.
   router.get('/:id/dialogs-by-folders', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
     const forceRefresh = req.query.refresh === '1';
+    const limitRaw = req.query.limit;
+    const maxDialogsFolder0 = forceRefresh && limitRaw != null
+      ? Math.min(3000, Math.max(100, Number(limitRaw)) || 3000)
+      : 3000;
+    const maxDialogsFolder1 = Math.min(2000, maxDialogsFolder0);
 
     const account = await getAccountOr404<{ id: string; telegram_id?: string | null }>(pool, id, organizationId, 'id, telegram_id');
     const accountTelegramId = account.telegram_id != null ? String(account.telegram_id).trim() : null;
@@ -169,8 +175,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
 
     const filters = await telegramManager.getDialogFilters(id);
     const [allDialogs0, allDialogs1] = await Promise.all([
-      telegramManager.getDialogsAll(id, 0, { maxDialogs: 3000, delayEveryN: 100, delayMs: 600 }),
-      telegramManager.getDialogsAll(id, 1, { maxDialogs: 2000, delayEveryN: 100, delayMs: 600 }).catch(() => []),
+      telegramManager.getDialogsAll(id, 0, { maxDialogs: maxDialogsFolder0, delayEveryN: 100, delayMs: 600 }),
+      telegramManager.getDialogsAll(id, 1, { maxDialogs: maxDialogsFolder1, delayEveryN: 100, delayMs: 600 }).catch(() => []),
     ]);
     const mergedById = new Map<string, any>();
     for (const d of [...allDialogs0, ...allDialogs1] as { id: unknown }[]) {
@@ -194,7 +200,8 @@ export function syncRouter({ pool, log, telegramManager }: Deps): Router {
       folderList.push({ id: f.id, title: f.title, emoticon: f.emoticon, dialogs: excludeSelf(dialogs) });
     }
     const pinned_chat_ids = allDialogs0.filter((d: any) => d.pinned === true).map((d: any) => String(d.id));
-    res.json({ folders: folderList, pinned_chat_ids });
+    const hasMore = allDialogs0.length >= maxDialogsFolder0 || allDialogs1.length >= maxDialogsFolder1;
+    res.json({ folders: folderList, pinned_chat_ids, hasMore });
   }));
 
   // GET /:id/sync-folders

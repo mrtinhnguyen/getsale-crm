@@ -15,11 +15,15 @@ Error: TIMEOUT
 
 Известные issues: [gram-js/gramjs#302](https://github.com/gram-js/gramjs/issues/302), [gram-js/gramjs#494](https://github.com/gram-js/gramjs/issues/494).
 
+## Связка GetDialogs и TIMEOUT другого аккаунта
+
+При долгом `getDialogsAll` (много диалогов, flood wait) один аккаунт может занимать event loop десятки секунд. В том же процессе крутятся все аккаунты: цикл апдейтов GramJS (`_updateLoop`) у **других** аккаунтов не успевает получить «тик» в свой таймаут — в логах появляется TIMEOUT у другого `accountId`, а не у того, кто тянет диалоги. Чтобы снизить вероятность такого сценария, в цикле `getDialogsAll` раз в N диалогов выполняется yield в event loop (`setImmediate`), чтобы успевали сработать update loop и keepalive остальных клиентов. Опционально можно ограничить объём одной загрузки (пагинация/limit) и реже блокировать event loop одним длинным запросом.
+
 ## Что делает сервис
 
 - **Keepalive:** каждую минуту вызывается `updates.GetState()`, чтобы Telegram не переставал слать апдейты.
-- **Обработка TIMEOUT:** при TIMEOUT из `updates.js` сервис планирует переподключение всех активных клиентов (debounce 12 с) и перезапускает циклы обновлений.
-- **Логирование:** TIMEOUT логируется как **warning** с текстом вроде «Update loop TIMEOUT (GramJS), reconnecting clients — expected under load or idle connection», а не как error.
+- **Обработка TIMEOUT:** при TIMEOUT из `updates.js` сервис планирует переподключение **только этого** аккаунта (debounce 8 с), чтобы не обрывать долгие запросы других (например GetDialogs).
+- **Логирование:** TIMEOUT логируется как **warning** с текстом вроде «Update loop TIMEOUT (GramJS), scheduling reconnect», а не как error.
 
 ## Рекомендации
 

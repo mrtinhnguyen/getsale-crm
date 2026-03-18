@@ -9,7 +9,7 @@
 
 | API / метод | Где вызывается | Частота | Нагрузка | Оптимизация |
 |-------------|----------------|---------|----------|-------------|
-| **messages.GetDialogs** (iterDialogs/getDialogs) | getDialogsAll, getDialogs | При открытии списка диалогов, refresh, sync | Высокая (много пагинаций) | ✅ dialogs-by-folders из БД по умолчанию; GET /dialogs из БД; refresh только по кнопке |
+| **messages.GetDialogs** (iterDialogs/getDialogs) | getDialogsAll, getDialogs | При открытии списка диалогов, refresh, sync | Высокая (много пагинаций) | ✅ dialogs-by-folders из БД по умолчанию; GET /dialogs из БД; refresh только по кнопке; в getDialogsAll — setImmediate каждые N диалогов (yield event loop), чтобы не глушить update loop других аккаунтов |
 | **messages.GetDialogFilters** | getDialogFilters, getDialogFilterRaw, getDialogFilterPeerIds | GET /folders, refresh=1, refreshChatsFromFolders (на каждый кастомный фильтр) | Средняя (лёгкий запрос, но дублируется) | ✅ Кэш в TelegramManager (TTL 90s); GET /folders из БД по умолчанию |
 | **messages.GetHistory** | syncHistoryForChat, fetchOlderMessagesFromTelegram, начальный sync | При скролле вверх, при новом чате, после коннекта | Высокая при активной подгрузке | Частично: только нужные чаты; лимиты и пагинация уже есть |
 | **getEntity / getInputEntity** | tryAddChatFromSelectedFolders, downloadMedia, deleteMessage, sendMessage, syncHistory | На новое сообщение (добавление чата), отправка, удаление, подгрузка истории | Низкая | ✅ tryAddChatFromSelectedFolders уже без GetDialogs (только getEntity) |

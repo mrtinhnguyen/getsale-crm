@@ -51,10 +51,13 @@ export class ChatSync {
     };
   }
 
+  /**
+   * Yields to the event loop every yieldEveryN dialogs so other accounts' update loops and keepalive can run (reduces TIMEOUT on other accounts).
+   */
   async getDialogsAll(
     accountId: string,
     folderId: number,
-    options?: { maxDialogs?: number; delayEveryN?: number; delayMs?: number }
+    options?: { maxDialogs?: number; delayEveryN?: number; delayMs?: number; yieldEveryN?: number }
   ): Promise<any[]> {
     const clientInfo = this.clients.get(accountId);
     if (!clientInfo || !clientInfo.isConnected) {
@@ -63,6 +66,7 @@ export class ChatSync {
     const maxDialogs = options?.maxDialogs ?? 3000;
     const delayEveryN = options?.delayEveryN ?? 100;
     const delayMs = options?.delayMs ?? 600;
+    const yieldEveryN = options?.yieldEveryN ?? 50;
     const result: any[] = [];
     let count = 0;
     const client = clientInfo.client as any;
@@ -77,6 +81,9 @@ export class ChatSync {
           count++;
           if (count % delayEveryN === 0 && count < maxDialogs) {
             await new Promise((r) => setTimeout(r, delayMs));
+          }
+          if (count % yieldEveryN === 0) {
+            await new Promise<void>((r) => setImmediate(r));
           }
         }
         if (count >= maxDialogs) break;
