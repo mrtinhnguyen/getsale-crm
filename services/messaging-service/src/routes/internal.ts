@@ -270,17 +270,18 @@ export function internalMessagingRouter({ pool, log }: Deps): Router {
       throw new AppError(400, 'X-Organization-Id header required', ErrorCodes.BAD_REQUEST);
     }
     const { bdAccountId, channelId, telegramMessageIds } = parsed.data;
+    const telegramIdsText = telegramMessageIds.map(String);
     const result =
       channelId != null
         ? await pool.query(
-            `DELETE FROM messages WHERE bd_account_id = $1 AND channel_id = $2 AND telegram_message_id = ANY($3::bigint[]) AND organization_id = $4
+            `DELETE FROM messages WHERE bd_account_id = $1 AND channel_id = $2 AND telegram_message_id = ANY($3::text[]) AND organization_id = $4
              RETURNING id, organization_id, channel_id, telegram_message_id`,
-            [bdAccountId, channelId, telegramMessageIds, organizationId]
+            [bdAccountId, channelId, telegramIdsText, organizationId]
           )
         : await pool.query(
-            `DELETE FROM messages WHERE bd_account_id = $1 AND telegram_message_id = ANY($2::bigint[]) AND organization_id = $3
+            `DELETE FROM messages WHERE bd_account_id = $1 AND telegram_message_id = ANY($2::text[]) AND organization_id = $3
              RETURNING id, organization_id, channel_id, telegram_message_id`,
-            [bdAccountId, telegramMessageIds, organizationId]
+            [bdAccountId, telegramIdsText, organizationId]
           );
     const deleted = (result.rows as Array<{ id: string; organization_id: string; channel_id: string; telegram_message_id: number }>).map(
       (r) => ({ id: r.id, organization_id: r.organization_id, channel_id: r.channel_id, telegram_message_id: r.telegram_message_id })

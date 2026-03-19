@@ -54,6 +54,7 @@ const productItems: { href: string; i18nKey: string; icon: typeof LayoutDashboar
   { href: '/dashboard/discovery', i18nKey: 'contactDiscovery', icon: Search },
   { href: '/dashboard/bd-accounts', i18nKey: 'bdAccounts', icon: Smartphone },
   { href: '/dashboard/analytics', i18nKey: 'analytics', icon: BarChart3 },
+  { href: '/dashboard/analytics/bd', i18nKey: 'analyticsBd', icon: BarChart3 },
   { href: '/dashboard/team', i18nKey: 'team', icon: Users },
 ];
 const accountItems: { href: string; i18nKey: string; icon: typeof Settings }[] = [

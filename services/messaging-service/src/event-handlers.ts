@@ -10,6 +10,43 @@ export interface EventHandlerDeps {
   log: Logger;
 }
 
+/** Persist read receipts: when contact reads our messages (read_outbox), mark outbound messages as read in DB. */
+async function handleReadOutbox(
+  pool: Pool,
+  organizationId: string,
+  bdAccountId: string,
+  channelId: string,
+  maxId: number,
+  log: Logger
+): Promise<void> {
+  try {
+    const result = await pool.query(
+      `UPDATE messages
+       SET unread = false, status = 'read', updated_at = NOW()
+       WHERE organization_id = $1 AND bd_account_id = $2 AND channel_id = $3
+         AND direction = 'outbound' AND telegram_message_id IS NOT NULL
+         AND (telegram_message_id ~ '^[0-9]+$' AND telegram_message_id::bigint <= $4)`,
+      [organizationId, bdAccountId, channelId, maxId]
+    );
+    if (result.rowCount && result.rowCount > 0) {
+      log.info({
+        message: 'Marked outbound messages as read',
+        bd_account_id: bdAccountId,
+        channel_id: channelId,
+        max_id: maxId,
+        updated: result.rowCount,
+      });
+    }
+  } catch (err) {
+    log.error({
+      message: 'handleReadOutbox failed',
+      error: String(err),
+      bd_account_id: bdAccountId,
+      channel_id: channelId,
+    });
+  }
+}
+
 export async function subscribeToEvents(deps: EventHandlerDeps): Promise<void> {
   const { pool, rabbitmq, log } = deps;
   await rabbitmq.subscribeToEvents(
@@ -25,6 +62,24 @@ export async function subscribeToEvents(deps: EventHandlerDeps): Promise<void> {
       } catch (err) {
         log.error({ message: 'attachLead error', error: String(err) });
       }
+    },
+    'events',
+    'messaging-service'
+  );
+
+  await rabbitmq.subscribeToEvents(
+    [EventType.BD_ACCOUNT_TELEGRAM_UPDATE],
+    async (event: any) => {
+      if (event.type !== EventType.BD_ACCOUNT_TELEGRAM_UPDATE) return;
+      const data = event.data || {};
+      const updateKind = data.updateKind;
+      if (updateKind !== 'read_outbox' && updateKind !== 'read_channel_outbox') return;
+      const organizationId = event.organizationId ?? data.organizationId;
+      const bdAccountId = data.bdAccountId;
+      const channelId = data.channelId;
+      const maxId = data.maxId;
+      if (!organizationId || !bdAccountId || !channelId || typeof maxId !== 'number') return;
+      await handleReadOutbox(pool, organizationId, bdAccountId, channelId, maxId, log);
     },
     'events',
     'messaging-service'

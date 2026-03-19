@@ -59,18 +59,26 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
         throw new AppError(400, 'No valid contact IDs in audience', ErrorCodes.VALIDATION);
       }
       contactsQuery = `
-        SELECT c.id as contact_id, c.organization_id, c.telegram_id
+        SELECT c.id as contact_id, c.organization_id, c.telegram_id, c.username
         FROM contacts c
-        WHERE c.organization_id = $1 AND c.telegram_id IS NOT NULL AND c.telegram_id != ''
+        WHERE c.organization_id = $1
+        AND (
+          (c.telegram_id IS NOT NULL AND TRIM(c.telegram_id) != '')
+          OR (c.username IS NOT NULL AND TRIM(c.username) != '')
+        )
         AND c.id = ANY($${paramIdx}::uuid[])
       `;
       queryParams.push(ids);
       paramIdx++;
     } else {
       contactsQuery = `
-        SELECT c.id as contact_id, c.organization_id, c.telegram_id
+        SELECT c.id as contact_id, c.organization_id, c.telegram_id, c.username
         FROM contacts c
-        WHERE c.organization_id = $1 AND c.telegram_id IS NOT NULL AND c.telegram_id != ''
+        WHERE c.organization_id = $1
+        AND (
+          (c.telegram_id IS NOT NULL AND TRIM(c.telegram_id) != '')
+          OR (c.username IS NOT NULL AND TRIM(c.username) != '')
+        )
       `;
       if (audience.filters?.companyId) {
         contactsQuery += ` AND c.company_id = $${paramIdx++}`;
@@ -114,7 +122,10 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
     let insertedCount = 0;
     for (const row of contacts) {
       let bdAccountId = defaultBdAccountId;
-      let channelId: string | null = row.telegram_id;
+      const telegramId = row.telegram_id != null && String(row.telegram_id).trim() !== '' ? String(row.telegram_id).trim() : null;
+      const usernameRaw = row.username != null ? String(row.username).trim().replace(/^@/, '') : null;
+      const usernameNorm = usernameRaw !== '' ? usernameRaw : null;
+      let channelId: string | null = telegramId ?? usernameNorm;
       if (channelId && bdAccountId) {
         const chatRes = await pool.query(
           `SELECT bd_account_id, telegram_chat_id FROM bd_account_sync_chats WHERE bd_account_id = $1 AND telegram_chat_id = $2 LIMIT 1`,
@@ -138,7 +149,7 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
     if (contacts.length > 0 && insertedCount === 0) {
       throw new AppError(
         400,
-        'No participants could be added. Ensure contacts have Telegram ID and an active BD account is selected.',
+        'No participants could be added. Ensure contacts have Telegram ID or username and an active BD account is selected.',
         ErrorCodes.VALIDATION
       );
     }

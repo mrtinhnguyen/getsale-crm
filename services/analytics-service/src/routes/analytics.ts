@@ -15,6 +15,12 @@ const PeriodQuerySchema = z.object({
   period: z.enum(['today', 'week', 'month', 'year']).default('month'),
 });
 
+const BdAnalyticsQuerySchema = z.object({
+  period: z.enum(['today', 'week', 'month', 'year']).default('month'),
+  bd_account_id: z.string().uuid().optional(),
+  folder_id: z.coerce.number().int().min(0).optional(),
+});
+
 /** Compute start and end (ISO strings) for a period. End is now; start is beginning of period. */
 export function getPeriodBounds(period: PeriodKey): { startDate: string; endDate: string } {
   const end = new Date();
@@ -258,6 +264,174 @@ export function analyticsRouter({ pool, log }: Deps): Router {
       };
     });
     res.json(rows);
+  }));
+
+  // ─── BD Analytics ───────────────────────────────────────────────────────
+  router.get('/bd/new-chats', validate(BdAnalyticsQuerySchema, 'query'), asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { period, bd_account_id: bdAccountIdParam, folder_id: folderIdParam } = req.query as unknown as z.infer<typeof BdAnalyticsQuerySchema>;
+    const { startDate, endDate } = getPeriodBounds(period);
+
+    const params: unknown[] = [organizationId, startDate, endDate];
+    let accountFilter = '';
+    let folderFilter = '';
+    if (bdAccountIdParam) {
+      params.push(bdAccountIdParam);
+      accountFilter = `AND fo.bd_account_id = $${params.length}`;
+    }
+    if (folderIdParam !== undefined) {
+      params.push(folderIdParam);
+      folderFilter = `AND wf.folder_id = $${params.length}`;
+    }
+
+    const newChatsQuery = `
+      WITH first_outbound AS (
+        SELECT
+          m.bd_account_id,
+          m.channel_id,
+          (MIN(COALESCE(m.telegram_date, m.created_at)) AT TIME ZONE 'UTC')::date AS first_date
+        FROM messages m
+        WHERE m.organization_id = $1 AND m.channel = 'telegram' AND m.direction = 'outbound'
+          AND m.bd_account_id IS NOT NULL
+          AND m.bd_account_id IN (SELECT id FROM bd_accounts WHERE organization_id = $1)
+          AND (COALESCE(m.telegram_date, m.created_at) >= $2 AND COALESCE(m.telegram_date, m.created_at) <= $3)
+        GROUP BY m.bd_account_id, m.channel_id
+      ),
+      chat_folders AS (
+        SELECT DISTINCT bd_account_id, telegram_chat_id AS channel_id, folder_id
+        FROM bd_account_sync_chat_folders
+        UNION
+        SELECT bd_account_id, telegram_chat_id, folder_id FROM bd_account_sync_chats WHERE folder_id IS NOT NULL
+      ),
+      with_folder AS (
+        SELECT fo.bd_account_id, fo.first_date, cf.folder_id
+        FROM first_outbound fo
+        INNER JOIN chat_folders cf ON cf.bd_account_id = fo.bd_account_id AND cf.channel_id = fo.channel_id
+        WHERE 1=1 ${accountFilter}
+      )
+      SELECT wf.bd_account_id, wf.folder_id, wf.first_date, COUNT(*)::int AS new_chats
+      FROM with_folder wf
+      WHERE 1=1 ${folderFilter}
+      GROUP BY wf.bd_account_id, wf.folder_id, wf.first_date
+      ORDER BY wf.bd_account_id, wf.first_date
+    `;
+    const newChatsRes = await pool.query(newChatsQuery, params);
+    const rows = newChatsRes.rows as { bd_account_id: string; folder_id: number; first_date: string; new_chats: number }[];
+
+    const byAccount = new Map<string, { new_chats: number; by_day: Map<string, number> }>();
+    for (const r of rows) {
+      const cur = byAccount.get(r.bd_account_id);
+      if (!cur) {
+        const byDay = new Map<string, number>([[r.first_date, r.new_chats]]);
+        byAccount.set(r.bd_account_id, { new_chats: r.new_chats, by_day: byDay });
+      } else {
+        cur.new_chats += r.new_chats;
+        cur.by_day.set(r.first_date, (cur.by_day.get(r.first_date) ?? 0) + r.new_chats);
+      }
+    }
+
+    const allAccountsRes = await pool.query(
+      `SELECT a.id, COALESCE(NULLIF(TRIM(a.display_name), ''), a.username, a.phone_number, a.telegram_id::text) AS display_name
+       FROM bd_accounts a WHERE a.organization_id = $1`,
+      [organizationId]
+    );
+    const allAccounts = allAccountsRes.rows as { id: string; display_name: string }[];
+    const displayByName = new Map(allAccounts.map((a) => [a.id, a.display_name || a.id]));
+
+    const accounts = allAccounts.map((a) => {
+      const data = byAccount.get(a.id);
+      return {
+        bd_account_id: a.id,
+        account_display_name: displayByName.get(a.id) ?? a.id,
+        new_chats: data?.new_chats ?? 0,
+        by_day: data
+          ? [...data.by_day.entries()]
+              .map(([date, new_chats]) => ({ date: typeof date === 'string' ? date : new Date(date).toISOString().slice(0, 10), new_chats }))
+              .sort((x, y) => x.date.localeCompare(y.date))
+          : [],
+      };
+    });
+
+    res.json({ accounts, period: { start_date: startDate, end_date: endDate } });
+  }));
+
+  router.get('/bd/contact-metrics', validate(BdAnalyticsQuerySchema, 'query'), asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { period, bd_account_id: bdAccountIdParam } = req.query as unknown as z.infer<typeof BdAnalyticsQuerySchema>;
+    const { startDate, endDate } = getPeriodBounds(period);
+
+    const params: unknown[] = [organizationId, startDate, endDate];
+    let accountFilter = '';
+    if (bdAccountIdParam) {
+      params.push(bdAccountIdParam);
+      accountFilter = `AND cohort.bd_account_id = $${params.length}`;
+    }
+
+    const metricsQuery = `
+      WITH cohort AS (
+        SELECT DISTINCT m.bd_account_id, m.channel_id
+        FROM messages m
+        WHERE m.organization_id = $1 AND m.channel = 'telegram' AND m.direction = 'outbound'
+          AND m.bd_account_id IS NOT NULL
+          AND (COALESCE(m.telegram_date, m.created_at) >= $2 AND COALESCE(m.telegram_date, m.created_at) <= $3)
+          ${accountFilter}
+      ),
+      per_chat AS (
+        SELECT
+          c.bd_account_id,
+          c.channel_id,
+          (EXISTS (
+            SELECT 1 FROM messages m2
+            WHERE m2.bd_account_id = c.bd_account_id AND m2.channel_id = c.channel_id
+              AND m2.organization_id = $1 AND m2.direction = 'outbound'
+              AND (m2.unread = false OR m2.status = 'read')
+          )) AS has_read,
+          (EXISTS (
+            SELECT 1 FROM messages m2
+            WHERE m2.bd_account_id = c.bd_account_id AND m2.channel_id = c.channel_id
+              AND m2.organization_id = $1 AND m2.direction = 'inbound'
+          )) AS has_replied
+        FROM cohort c
+      )
+      SELECT
+        bd_account_id,
+        COUNT(*)::int AS total_contacts,
+        COUNT(*) FILTER (WHERE NOT has_read)::int AS not_read,
+        COUNT(*) FILTER (WHERE has_read AND NOT has_replied)::int AS read_no_reply,
+        COUNT(*) FILTER (WHERE has_replied)::int AS replied
+      FROM per_chat
+      GROUP BY bd_account_id
+    `;
+    const metricsRes = await pool.query(metricsQuery, params);
+    const rows = metricsRes.rows as { bd_account_id: string; total_contacts: number; not_read: number; read_no_reply: number; replied: number }[];
+    const metricsByAccount = new Map(rows.map((r) => [r.bd_account_id, r]));
+
+    const allAccountsRes = await pool.query(
+      `SELECT a.id, COALESCE(NULLIF(TRIM(a.display_name), ''), a.username, a.phone_number, a.telegram_id::text) AS display_name
+       FROM bd_accounts a WHERE a.organization_id = $1`,
+      [organizationId]
+    );
+    const allAccounts = allAccountsRes.rows as { id: string; display_name: string }[];
+    const displayByName = new Map(allAccounts.map((a) => [a.id, a.display_name || a.id]));
+
+    const accounts = allAccounts.map((a) => {
+      const r = metricsByAccount.get(a.id);
+      const total = r?.total_contacts ?? 0;
+      const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+      return {
+        bd_account_id: a.id,
+        account_display_name: displayByName.get(a.id) ?? a.id,
+        total_contacts: total,
+        not_read: r?.not_read ?? 0,
+        read_no_reply: r?.read_no_reply ?? 0,
+        replied: r?.replied ?? 0,
+        pct_not_read: r ? pct(r.not_read) : 0,
+        pct_read_no_reply: r ? pct(r.read_no_reply) : 0,
+        pct_replied: r ? pct(r.replied) : 0,
+      };
+    });
+
+    res.json({ accounts, period: { start_date: startDate, end_date: endDate } });
   }));
 
   // Export data

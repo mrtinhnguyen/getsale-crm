@@ -15,6 +15,7 @@ const PATH_LABELS: Record<string, string> = {
   'bd-accounts': 'nav.bdAccounts',
   discovery: 'nav.contactDiscovery',
   analytics: 'nav.analytics',
+  bd: 'nav.analyticsBd',
   team: 'nav.team',
   settings: 'nav.settings',
 };
