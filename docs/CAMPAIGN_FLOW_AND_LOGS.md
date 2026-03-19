@@ -316,5 +316,9 @@ sequenceDiagram
 После деплоя правок и при следующем запуске рассылки: при «user/chat not found» должен приходить **400** (circuit не откроется), при прочих сбоях Telegram — **502** с текстом в теле ответа и в логах bd-accounts.
 
 **Дополнительно (по логам bd-accounts):** если в логах видно `PEER_FLOOD` или `INPUT_USER_DEACTIVATED`:
-- **PEER_FLOOD** — лимит Telegram на число сообщений новым пользователям; bd-accounts отдаёт **429** (rate limit), campaign не считает это сбоем для circuit breaker, участник помечается failed после ретраев, рассылка идёт дальше по остальным.
+- **PEER_FLOOD** — лимит Telegram на число сообщений новым пользователям; bd-accounts отдаёт **429** (rate limit). Campaign-service при 429 не переводит участника в failed: выставляет `next_send_at` на отложенное время (env `CAMPAIGN_429_RETRY_AFTER_MINUTES`, по умолчанию 30 мин), чтобы рассылка повторила попытку позже. При прочих сбоях после ретраев участник помечается failed, рассылка идёт дальше по остальным.
 - **INPUT_USER_DEACTIVATED** — аккаунт получателя деактивирован в Telegram; bd-accounts отдаёт **400**, участник помечается failed, circuit не открывается.
+
+**Проброс причины ошибки и логи:**
+- messaging-service при 4xx/5xx от bd-accounts отдаёт клиенту текст из тела ответа (например «Telegram rate limit (PEER_FLOOD)...») в полях `error`/`message`, а не только «bd-accounts-service ... returned 429».
+- campaign-service в логах «Campaign send failed after retries» и в `campaign_participants.metadata.lastError` сохраняет эту реальную причину (PEER_FLOOD и т.д.). При 429 в логах пишется «Campaign send rate limited (429), deferred retry» с полем `reason`.

@@ -124,7 +124,7 @@ export interface CampaignParticipant {
 }
 
 /** PHASE 2.5 — участник с полями для воронки (статус по этапу, даты, conversation_id). */
-export type CampaignParticipantPhase = 'sent' | 'read' | 'replied' | 'shared';
+export type CampaignParticipantPhase = 'sent' | 'read' | 'replied' | 'shared' | 'failed';
 
 export interface CampaignParticipantRow {
   participant_id: string;
@@ -134,6 +134,8 @@ export interface CampaignParticipantRow {
   bd_account_id: string | null;
   channel_id: string | null;
   status_phase: CampaignParticipantPhase;
+  /** Last delivery error (e.g. PEER_FLOOD) when status_phase is 'failed'. */
+  last_error?: string | null;
   pipeline_stage_name: string | null;
   sent_at: string | null;
   replied_at: string | null;
@@ -149,6 +151,8 @@ export interface CampaignParticipantRow {
 export interface CampaignStats {
   total: number;
   byStatus: Record<string, number>;
+  /** When there are failed participants, a sample error message (e.g. PEER_FLOOD). */
+  error_summary?: { count: number; sample?: string };
   totalSends?: number;
   contactsSent?: number;
   conversionRate?: number;

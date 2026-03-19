@@ -163,10 +163,14 @@ export function registerSendRoutes(router: Router, deps: MessagesRouterDeps): vo
       } else {
         const error = lastError;
         const errMsg = error instanceof Error ? error.message : String(error);
-        log.error({ message: 'Error sending Telegram message', error: errMsg });
+        const downstreamMessage =
+          error instanceof ServiceCallError && error.body != null && typeof error.body === 'object'
+            ? (error.body as { message?: string }).message ?? (error.body as { error?: string }).error ?? errMsg
+            : errMsg;
+        log.error({ message: 'Error sending Telegram message', error: downstreamMessage });
         await pool.query('UPDATE messages SET status = $1, metadata = $2 WHERE id = $3', [
           MessageStatus.FAILED,
-          JSON.stringify({ error: errMsg }),
+          JSON.stringify({ error: downstreamMessage }),
           message.id,
         ]);
         const is413 = (error instanceof ServiceCallError && error.statusCode === 413)
@@ -176,14 +180,14 @@ export function registerSendRoutes(router: Router, deps: MessagesRouterDeps): vo
         }
         if (error instanceof ServiceCallError && error.statusCode >= 400 && error.statusCode < 500) {
           return res.status(error.statusCode).json({
-            error: errMsg || 'Bad request',
-            message: errMsg || 'Failed to send message',
+            error: downstreamMessage || 'Bad request',
+            message: downstreamMessage || 'Failed to send message',
           });
         }
         const status = error instanceof ServiceCallError && error.statusCode >= 500 ? error.statusCode : 500;
         return res.status(status).json({
           error: status >= 500 ? 'Downstream error' : 'Internal server error',
-          message: errMsg || 'Failed to send message',
+          message: downstreamMessage || 'Failed to send message',
         });
       }
     }

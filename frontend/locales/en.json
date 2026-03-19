@@ -514,6 +514,8 @@
     "statusReplied": "Replied",
     "statusBounced": "Bounced",
     "statusStopped": "Stopped",
+    "statusFailed": "Error",
+    "deliveryErrorsBanner": "Some messages were not delivered ({{count}} participants). This may be due to Telegram limits — see status in the participants table.",
     "stats": "Statistics",
     "conversion": "Conversion",
     "conversionSubtitle": "{{replied}} of {{total}} replied",

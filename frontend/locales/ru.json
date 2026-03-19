@@ -514,6 +514,8 @@
     "statusReplied": "Ответил",
     "statusBounced": "Отбой",
     "statusStopped": "Остановлено",
+    "statusFailed": "Ошибка",
+    "deliveryErrorsBanner": "Часть сообщений не доставлена ({{count}} участников). Причина может быть связана с лимитами Telegram — см. статус в таблице участников.",
     "stats": "Статистика",
     "conversion": "Конверсия",
     "conversionSubtitle": "{{replied}} из {{total}} ответили",

@@ -27,6 +27,7 @@ const PHASE_KEYS: Record<CampaignParticipantPhase, string> = {
   read: 'campaigns.read',
   replied: 'campaigns.replied',
   shared: 'campaigns.shared',
+  failed: 'campaigns.statusFailed',
 };
 
 export function CampaignParticipantsTable({
@@ -242,8 +243,10 @@ export function CampaignParticipantsTable({
                         p.status_phase === 'shared' && 'bg-primary/20 text-primary',
                         p.status_phase === 'replied' && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
                         p.status_phase === 'read' && 'bg-blue-500/15 text-blue-700 dark:text-blue-400',
-                        p.status_phase === 'sent' && 'bg-muted text-muted-foreground'
+                        p.status_phase === 'sent' && 'bg-muted text-muted-foreground',
+                        p.status_phase === 'failed' && 'bg-destructive/15 text-destructive'
                       )}
+                      title={p.status_phase === 'failed' && p.last_error ? p.last_error : undefined}
                     >
                       {t(PHASE_KEYS[p.status_phase])}
                     </span>

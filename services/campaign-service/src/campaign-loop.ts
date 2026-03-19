@@ -11,9 +11,10 @@ import {
 import type { CampaignStep, DueParticipantRow } from './types';
 
 const CAMPAIGN_SEND_INTERVAL_MS = parseInt(String(process.env.CAMPAIGN_SEND_INTERVAL_MS || 60000), 10);
-const CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY = parseInt(String(process.env.CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY || 40), 10);
+const CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY = parseInt(String(process.env.CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY || 20), 10);
 const SEND_MAX_RETRIES = 3;
 const CAMPAIGN_BATCH_SIZE = 20;
+const CAMPAIGN_429_RETRY_AFTER_MINUTES = parseInt(String(process.env.CAMPAIGN_429_RETRY_AFTER_MINUTES || '30'), 10);
 
 export interface CampaignLoopDeps {
   pool: Pool;
@@ -286,12 +287,43 @@ async function processParticipant(
       log
     );
   } catch (sendErr) {
+    const reasonMessage =
+      sendErr instanceof ServiceCallError && sendErr.body != null && typeof sendErr.body === 'object'
+        ? (sendErr.body as { message?: string }).message ?? (sendErr.body as { error?: string }).error ?? (sendErr instanceof Error ? sendErr.message : String(sendErr))
+        : sendErr instanceof Error ? sendErr.message : String(sendErr);
+
+    const is429 = sendErr instanceof ServiceCallError && sendErr.statusCode === 429;
+    if (is429) {
+      const retryAt = new Date(Date.now() + CAMPAIGN_429_RETRY_AFTER_MINUTES * 60 * 1000);
+      await client.query(
+        `UPDATE campaign_participants SET next_send_at = $1, metadata = $2, updated_at = NOW() WHERE id = $3`,
+        [
+          retryAt.toISOString(),
+          JSON.stringify({ lastError: reasonMessage, last429At: new Date().toISOString() }),
+          row.participant_id,
+        ]
+      );
+      await client.query('COMMIT');
+      log.warn({
+        message: 'Campaign send rate limited (429), deferred retry',
+        participantId: row.participant_id,
+        reason: reasonMessage,
+        retryAt: retryAt.toISOString(),
+      });
+      return;
+    }
+
     await client.query(
       `UPDATE campaign_participants SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
-      [JSON.stringify({ lastError: sendErr instanceof Error ? sendErr.message : String(sendErr), attempts: SEND_MAX_RETRIES }), row.participant_id]
+      [JSON.stringify({ lastError: reasonMessage, attempts: SEND_MAX_RETRIES }), row.participant_id]
     );
     await client.query('COMMIT');
-    log.warn({ message: 'Campaign send failed after retries', participantId: row.participant_id, attempts: SEND_MAX_RETRIES, error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
+    log.warn({
+      message: 'Campaign send failed after retries',
+      participantId: row.participant_id,
+      attempts: SEND_MAX_RETRIES,
+      reason: reasonMessage,
+    });
     return;
   }
 

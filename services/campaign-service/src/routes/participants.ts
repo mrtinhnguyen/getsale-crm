@@ -121,6 +121,17 @@ export function participantsRouter({ pool, log }: Deps): Router {
     const revenuePerReply = totalReplied > 0 ? Math.round((totalRevenue / totalReplied) * 100) / 100 : 0;
     const avgRevenuePerWon = totalWon > 0 ? Math.round((totalRevenue / totalWon) * 100) / 100 : 0;
     const dr = dateRangeRes.rows[0] as { first_send_at: string | null; last_send_at: string | null };
+    const failedCount = byStatus.failed ?? 0;
+    let errorSummarySample: string | null = null;
+    if (failedCount > 0) {
+      const sampleRes = await pool.query(
+        `SELECT metadata->>'lastError' AS last_error FROM campaign_participants WHERE campaign_id = $1 AND status = 'failed' AND (metadata->>'lastError') IS NOT NULL ORDER BY updated_at DESC LIMIT 1`,
+        [id]
+      );
+      const val = (sampleRes.rows[0] as { last_error: string | null } | undefined)?.last_error;
+      if (typeof val === 'string' && val.trim()) errorSummarySample = val;
+    }
+
     const statsDurationMs = Date.now() - statsStartMs;
     if (statsDurationMs > 2000) {
       log.warn({ message: 'GET /campaigns/:id/stats slow', correlation_id: req.correlationId, endpoint: 'GET /campaigns/:id/stats', campaignId: id, durationMs: statsDurationMs, participantsTotal: total, event: 'slow_stats' });
@@ -128,6 +139,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
     res.json({
       total,
       byStatus,
+      ...(failedCount > 0 && { error_summary: { count: failedCount, sample: errorSummarySample ?? undefined } }),
       totalSends,
       contactsSent,
       conversionRate,
@@ -223,6 +235,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
          cp.bd_account_id,
          cp.channel_id,
          cp.status AS participant_status,
+         cp.metadata AS participant_metadata,
          cp.current_step,
          cp.next_send_at,
          (SELECT COUNT(*)::int FROM campaign_sequences WHERE campaign_id = cp.campaign_id) AS sequence_total_steps,
@@ -251,7 +264,25 @@ export function participantsRouter({ pool, log }: Deps): Router {
       params
     );
     const rows = (result.rows as any[]).map((r) => {
-      const phase = r.shared_chat_created_at ? 'shared' : r.participant_status === 'replied' ? 'replied' : r.first_message_read ? 'read' : 'sent';
+      const phase =
+        r.participant_status === 'failed'
+          ? 'failed'
+          : r.shared_chat_created_at
+            ? 'shared'
+            : r.participant_status === 'replied'
+              ? 'replied'
+              : r.first_message_read
+                ? 'read'
+                : 'sent';
+      let last_error: string | null = null;
+      if (r.participant_metadata != null) {
+        try {
+          const meta = typeof r.participant_metadata === 'string' ? JSON.parse(r.participant_metadata) : r.participant_metadata;
+          if (meta && typeof meta.lastError === 'string') last_error = meta.lastError;
+        } catch {
+          // ignore
+        }
+      }
       return {
         participant_id: r.participant_id,
         contact_id: r.contact_id,
@@ -260,6 +291,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
         bd_account_id: r.bd_account_id ?? null,
         channel_id: r.channel_id ?? null,
         status_phase: phase,
+        last_error: last_error ?? null,
         pipeline_stage_name: r.pipeline_stage_name ?? null,
         sent_at: r.sent_at instanceof Date ? r.sent_at.toISOString() : r.sent_at,
         replied_at: r.replied_at instanceof Date ? r.replied_at.toISOString() : r.replied_at,

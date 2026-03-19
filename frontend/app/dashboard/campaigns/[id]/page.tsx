@@ -436,6 +436,15 @@ export default function CampaignDetailPage() {
                 </div>
               )}
 
+              {(campaign?.status === 'active' && (stats.byStatus?.failed ?? 0) > 0) && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+                  {t('campaigns.deliveryErrorsBanner', { count: stats.byStatus.failed })}
+                  {stats.error_summary?.sample && (
+                    <p className="mt-2 font-medium text-amber-900 dark:text-amber-100">{stats.error_summary.sample}</p>
+                  )}
+                </div>
+              )}
+
               {/* PHASE 2.5 + 2.7 — KPI: Sent, Read, Replied, Shared, Won, Lost, Revenue */}
               {(stats.total_sent != null && stats.total_sent > 0) && (
                 <>
