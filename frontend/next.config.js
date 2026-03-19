@@ -30,7 +30,7 @@ const nextConfig = {
     }];
   },
   async rewrites() {
-    // Use API_URL for server-side (Docker service hostname) or NEXT_PUBLIC_API_URL for client-side (localhost)
+    // Prefer API_URL at build (Docker: http://api-gateway:8000) so /api/* proxies inside the stack, not cross-origin to api-crm.
     const apiUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
     return [
       {

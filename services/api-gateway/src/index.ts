@@ -21,6 +21,9 @@ const redis = new RedisClient(REDIS_URL);
 
 const app = express();
 
+// CORS before helmet so OPTIONS preflight is answered reliably (direct calls to api-crm.getsale.ai).
+app.use(corsMiddleware);
+app.use(correlationIdMiddleware);
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -35,8 +38,6 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false,
 }));
-app.use(corsMiddleware);
-app.use(correlationIdMiddleware);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return next();

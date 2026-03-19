@@ -230,7 +230,7 @@ export function getForwardedFromLabel(msg: Message): string | null {
 export function getMediaProxyUrl(bdAccountId: string, channelId: string, telegramMessageId: string): string {
   const base =
     typeof window !== 'undefined'
-      ? (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '')
+      ? ''
       : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || '').replace(/\/$/, '');
   const params = new URLSearchParams({ channelId, messageId: telegramMessageId });
   return `${base}/api/bd-accounts/${bdAccountId}/media?${params.toString()}`;

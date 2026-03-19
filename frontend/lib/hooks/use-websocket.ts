@@ -5,21 +5,16 @@ import { reportError, reportWarning } from '@/lib/error-reporter';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3004';
 
-/** ws-token: same host as API so auth cookies are sent (see public-api-base). */
-function getWsTokenUrl(): string {
-  if (typeof window === 'undefined') return '';
-  const base = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
-  return base ? `${base}/api/auth/ws-token` : '/api/auth/ws-token';
-}
+/** Same-origin /api/* so Next rewrites to gateway; cookies work for app.getsale.ai */
+const WS_TOKEN_URL = typeof window !== 'undefined' ? '/api/auth/ws-token' : '';
 
 /** Delay before disconnecting on cleanup (avoids double connection in React Strict Mode) */
 const DISCONNECT_DELAY_MS = 200;
 
 async function fetchWsToken(): Promise<string | null> {
-  const url = getWsTokenUrl();
-  if (!url) return null;
+  if (!WS_TOKEN_URL) return null;
   try {
-    const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    const res = await fetch(WS_TOKEN_URL, { credentials: 'include', cache: 'no-store' });
     if (!res.ok) {
       reportWarning(`ws-token request failed: ${res.status} ${res.statusText}`, { component: 'useWebSocket', action: 'fetchWsToken' });
       return null;
