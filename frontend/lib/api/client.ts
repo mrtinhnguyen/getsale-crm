@@ -1,9 +1,9 @@
 import axios from 'axios';
 import { useAuthStore } from '@/lib/stores/auth-store';
 import { authApi } from '@/lib/api/auth';
+import { getApiBaseUrl } from '@/lib/api/public-api-base';
 
-const API_URL =
-  typeof window !== 'undefined' ? '' : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
+const API_URL = getApiBaseUrl();
 
 export const apiClient = axios.create({
   baseURL: API_URL,

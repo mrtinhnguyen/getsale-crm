@@ -1,11 +1,9 @@
 import axios from 'axios';
+import { getApiBaseUrl } from '@/lib/api/public-api-base';
 
-const API_BASE_URL =
-  typeof window !== 'undefined'
-    ? ''
-    : (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000');
+const base = getApiBaseUrl();
 
 export const authApi = axios.create({
-  baseURL: `${API_BASE_URL}/api/auth`,
+  baseURL: base ? `${base}/api/auth` : '/api/auth',
   withCredentials: true,
 });

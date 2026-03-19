@@ -421,6 +421,8 @@ services:
     restart: unless-stopped
     environment:
       - NODE_ENV=production
+      # SSR / server-side fetches: reach api-gateway on Docker network (browser uses NEXT_PUBLIC_* from image build).
+      - API_URL=http://api-gateway:8000
     depends_on:
       api-gateway: { condition: service_healthy }
     networks:
