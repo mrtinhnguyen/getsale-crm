@@ -13,10 +13,10 @@
 #   crm-service:    INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL, BD_ACCOUNTS_SERVICE_URL, CAMPAIGN_SERVICE_URL
 #   messaging:       INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL, WEBSOCKET_SERVICE_URL, BD_ACCOUNTS_SERVICE_URL, AI_SERVICE_URL
 #   websocket:       INTERNAL_AUTH_SECRET, JWT_SECRET, REDIS_URL, RABBITMQ_URL, AUTH_SERVICE_URL, CORS_ORIGIN (prod)
-#   ai-service:     INTERNAL_AUTH_SECRET, REDIS_URL, RABBITMQ_URL; OPENAI_API_KEY optional
+#   ai-service:     INTERNAL_AUTH_SECRET, REDIS_URL, RABBITMQ_URL; OPENAI_API_KEY optional; OPENROUTER_API_KEY optional (campaign rephrase)
 #   user-service:   INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL, RABBITMQ_URL; STRIPE_* optional
 #   bd-accounts:    INTERNAL_AUTH_SECRET, SESSION_ENCRYPTION_KEY, TELEGRAM_API_ID, TELEGRAM_API_HASH, MESSAGING_SERVICE_URL (uses env_file)
-#   pipeline, automation, analytics, activity, team, campaign: INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL (if used), RABBITMQ_URL; *_SERVICE_URL as needed
+#   pipeline, automation, analytics, activity, team, campaign: INTERNAL_AUTH_SECRET, DATABASE_URL, REDIS_URL (if used), RABBITMQ_URL; *_SERVICE_URL as needed (campaign needs AI_SERVICE_URL for AI rephrase)
 #
 # name: fixes project name so "compose down" never touches Traefik (run from /docker/getsale-crm)
 name: getsale-crm
@@ -250,6 +250,8 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - RABBITMQ_URL=amqp://getsale:${RABBITMQ_PASSWORD:-set_me_in_env}@rabbitmq:5672
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET}
     depends_on:
       redis: { condition: service_healthy }
@@ -404,6 +406,7 @@ services:
       - MESSAGING_SERVICE_URL=http://messaging-service:3003
       - BD_ACCOUNTS_SERVICE_URL=http://bd-accounts-service:3007
       - PIPELINE_SERVICE_URL=http://pipeline-service:3008
+      - AI_SERVICE_URL=http://ai-service:3005
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

@@ -1,5 +1,6 @@
 // @ts-nocheck — GramJS types are incomplete
 import { Api } from 'telegram';
+import { isUsernameLike, resolveUsernameToInputPeer } from './resolve-username';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 import type { Pool } from 'pg';
 
@@ -97,7 +98,14 @@ export class FileHandler {
         name: opts.filename || 'file',
       });
       const client = clientInfo.client as any;
-      const peer = await this.resolvePeer(accountId, chatId);
+      let peer: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
+      if (typeof peer === 'string' && peer.length > 0 && isUsernameLike(peer)) {
+        const resolved = await resolveUsernameToInputPeer(clientInfo.client, peer);
+        if (resolved) peer = resolved;
+        else peer = await client.getInputEntity(peer);
+      } else if (typeof peer === 'string' && peer.length > 0 && Number.isNaN(Number(peer))) {
+        peer = await client.getInputEntity(peer);
+      }
       const message = await client.sendFile(peer, {
         file,
         caption: opts.caption || '',

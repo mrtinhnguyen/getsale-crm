@@ -3,15 +3,25 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import Link from 'next/link';
-import { MessageSquare, Loader2, User, Trash2 } from 'lucide-react';
+import { MessageSquare, Loader2, User, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   fetchCampaignParticipantRows,
+  fetchCampaignParticipantAccounts,
+  fetchCampaignAnalytics,
   type CampaignParticipantRow,
   type CampaignWithDetails,
   type SelectedContactInfo,
   type CampaignParticipantPhase,
+  type CampaignParticipantAccount,
 } from '@/lib/api/campaigns';
 import { clsx } from 'clsx';
+
+function accountInitials(displayName: string | null | undefined): string {
+  if (!displayName || !displayName.trim()) return '?';
+  const parts = displayName.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0]![0] + parts[1]![0]).toUpperCase().slice(0, 2);
+  return displayName.slice(0, 2).toUpperCase();
+}
 
 interface CampaignParticipantsTableProps {
   campaignId: string;
@@ -45,6 +55,12 @@ export function CampaignParticipantsTable({
   const [nextPage, setNextPage] = useState(2);
   const [hasMore, setHasMore] = useState(true);
   const [filter, setFilter] = useState<'all' | 'replied' | 'not_replied' | 'shared'>('all');
+  const [bdAccountId, setBdAccountId] = useState<string>('');
+  const [sentFrom, setSentFrom] = useState<string>('');
+  const [sentTo, setSentTo] = useState<string>('');
+  const [accounts, setAccounts] = useState<CampaignParticipantAccount[]>([]);
+  const [sendsByAccountByDay, setSendsByAccountByDay] = useState<{ date: string; accountId: string; accountDisplayName: string; sends: number }[]>([]);
+  const [sendsByAccountExpanded, setSendsByAccountExpanded] = useState(false);
   const limit = 50;
 
   const selectedContacts = (campaign?.status === 'draft' || campaign?.status === 'paused')
@@ -62,6 +78,9 @@ export function CampaignParticipantsTable({
         page: pageToLoad,
         limit,
         filter: filter === 'all' ? undefined : filter,
+        bdAccountId: bdAccountId || undefined,
+        sentFrom: sentFrom || undefined,
+        sentTo: sentTo || undefined,
       });
       if (append) setParticipants((prev) => [...prev, ...list]);
       else setParticipants(list);
@@ -84,13 +103,23 @@ export function CampaignParticipantsTable({
       return;
     }
     load();
-  }, [campaignId, showSelectedOnly, filter]);
+  }, [campaignId, showSelectedOnly, filter, bdAccountId, sentFrom, sentTo]);
+
+  useEffect(() => {
+    if (showSelectedOnly) return;
+    fetchCampaignParticipantAccounts(campaignId).then(setAccounts).catch(() => setAccounts([]));
+  }, [campaignId, showSelectedOnly]);
+
+  useEffect(() => {
+    if (showSelectedOnly) return;
+    fetchCampaignAnalytics(campaignId, { days: 14 }).then((a) => setSendsByAccountByDay(a.sendsByAccountByDay ?? [])).catch(() => setSendsByAccountByDay([]));
+  }, [campaignId, showSelectedOnly]);
 
   useEffect(() => {
     if (!isActive) return;
     const id = setInterval(() => load(), 30000);
     return () => clearInterval(id);
-  }, [isActive, campaignId, filter]);
+  }, [isActive, campaignId, filter, bdAccountId, sentFrom, sentTo]);
 
   const selectedDisplayName = (c: SelectedContactInfo) => {
     const name = (c.display_name || [c.first_name, c.last_name].filter(Boolean).join(' ')).trim();
@@ -120,21 +149,52 @@ export function CampaignParticipantsTable({
         </h3>
         <div className="flex items-center gap-2 flex-wrap">
           {!showSelectedOnly && (
-            <div className="flex rounded-lg border border-border p-0.5 bg-background">
-              {(['all', 'replied', 'not_replied', 'shared'] as const).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setFilter(f)}
-                  className={clsx(
-                    'px-2 py-1 text-xs font-medium rounded-md transition-colors',
-                    filter === f ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-                  )}
+            <>
+              <div className="flex rounded-lg border border-border p-0.5 bg-background">
+                {(['all', 'replied', 'not_replied', 'shared'] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setFilter(f)}
+                    className={clsx(
+                      'px-2 py-1 text-xs font-medium rounded-md transition-colors',
+                      filter === f ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {t(`campaigns.filter${f === 'all' ? 'All' : f === 'replied' ? 'Replied' : f === 'not_replied' ? 'NotReplied' : 'Shared'}`)}
+                  </button>
+                ))}
+              </div>
+              {accounts.length > 0 && (
+                <select
+                  value={bdAccountId}
+                  onChange={(e) => setBdAccountId(e.target.value)}
+                  className="h-8 min-w-[120px] rounded-lg border border-border bg-background px-2 text-xs text-foreground"
                 >
-                  {t(`campaigns.filter${f === 'all' ? 'All' : f === 'replied' ? 'Replied' : f === 'not_replied' ? 'NotReplied' : 'Shared'}`)}
-                </button>
-              ))}
-            </div>
+                  <option value="">{t('campaigns.filterByAccountAll')}</option>
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.displayName}</option>
+                  ))}
+                </select>
+              )}
+              <div className="flex items-center gap-1 text-xs">
+                <input
+                  type="date"
+                  value={sentFrom}
+                  onChange={(e) => setSentFrom(e.target.value)}
+                  className="h-8 rounded border border-border bg-background px-2 text-foreground"
+                  title={t('campaigns.sentFrom')}
+                />
+                <span className="text-muted-foreground">–</span>
+                <input
+                  type="date"
+                  value={sentTo}
+                  onChange={(e) => setSentTo(e.target.value)}
+                  className="h-8 rounded border border-border bg-background px-2 text-foreground"
+                  title={t('campaigns.sentTo')}
+                />
+              </div>
+            </>
           )}
           {isActive && (
             <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">
@@ -210,10 +270,46 @@ export function CampaignParticipantsTable({
             {t('campaigns.noParticipantsYet')}
           </div>
         ) : (
+          <>
+            {sendsByAccountByDay.length > 0 && (
+              <div className="border-b border-border bg-muted/20">
+                <button
+                  type="button"
+                  onClick={() => setSendsByAccountExpanded((v) => !v)}
+                  className="w-full px-4 py-2 flex items-center gap-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                >
+                  {sendsByAccountExpanded ? <ChevronDown className="w-4 h-4 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
+                  {t('campaigns.sendsByAccountByDay')} ({t('campaigns.periodDays', { count: 14 })})
+                </button>
+                {sendsByAccountExpanded && (
+                  <div className="px-4 pb-2 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-muted-foreground">
+                          <th className="text-left py-1 pr-3">{t('campaigns.date')}</th>
+                          <th className="text-left py-1 pr-3">{t('campaigns.account')}</th>
+                          <th className="text-right py-1">{t('campaigns.sendsCount')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sendsByAccountByDay.slice(0, 30).map((r, i) => (
+                          <tr key={`${r.date}-${r.accountId}-${i}`} className="border-t border-border/50">
+                            <td className="py-1 pr-3 text-foreground">{new Date(r.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })}</td>
+                            <td className="py-1 pr-3 text-foreground">{r.accountDisplayName}</td>
+                            <td className="py-1 text-right font-medium">{r.sends}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/20">
                 <th className="text-left px-4 py-3 font-medium text-foreground">{t('campaigns.lead')}</th>
+                <th className="text-left px-4 py-3 font-medium text-foreground w-12" title={t('campaigns.accountColumnTitle')}>{t('campaigns.account')}</th>
                 <th className="text-left px-4 py-3 font-medium text-foreground">{t('campaigns.status')}</th>
                 <th className="text-left px-4 py-3 font-medium text-foreground hidden sm:table-cell">{t('campaigns.stepShort')}</th>
                 <th className="text-left px-4 py-3 font-medium text-foreground hidden sm:table-cell">Pipeline</th>
@@ -235,6 +331,18 @@ export function CampaignParticipantsTable({
                         {p.contact_name || '—'}
                       </span>
                     </div>
+                  </td>
+                  <td className="px-4 py-3" title={p.bd_account_display_name ?? p.bd_account_id ?? undefined}>
+                    {p.bd_account_id ? (
+                      <div
+                        className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0 text-[10px] font-medium text-muted-foreground border border-border"
+                        title={p.bd_account_display_name ?? p.bd_account_id}
+                      >
+                        {accountInitials(p.bd_account_display_name)}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -282,6 +390,7 @@ export function CampaignParticipantsTable({
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
       {hasMore && participants.length >= limit && (

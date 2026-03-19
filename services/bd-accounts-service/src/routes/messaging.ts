@@ -6,7 +6,7 @@ import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, validate } from '@getsale/service-core';
 import { TelegramManager } from '../telegram';
 import { serializeMessage } from '../telegram-serialize';
-import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, getAccountOr404, getErrorMessage, getErrorCode, requireBidiCanWriteAccount } from '../helpers';
+import { MAX_FILE_SIZE_BYTES, BULK_SEND_DELAY_MS, getAccountOr404, getErrorMessage, getErrorCode, getRetryAfterSeconds, requireBidiCanWriteAccount } from '../helpers';
 
 const SendMessageSchema = z.object({
   chatId: z.string().min(1).max(256),
@@ -116,6 +116,19 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
           ErrorCodes.BAD_REQUEST
         );
       }
+      const retryAfterSeconds = getRetryAfterSeconds(sendErr);
+      const codeNum = sendErr != null && typeof sendErr === 'object' && 'code' in sendErr ? (sendErr as { code: unknown }).code : undefined;
+      const isFlood =
+        codeNum === 420 ||
+        (typeof errMsg === 'string' && /wait of \d+ seconds?/i.test(errMsg));
+      if (isFlood && retryAfterSeconds != null) {
+        throw new AppError(
+          429,
+          errMsg && errMsg.length < 256 ? errMsg : 'Telegram flood wait. Retry after the indicated time.',
+          ErrorCodes.RATE_LIMITED,
+          { retryAfterSeconds }
+        );
+      }
       if (
         (typeof code === 'string' && /^PEER_FLOOD$/i.test(code)) ||
         (typeof errMsg === 'string' && errMsg.includes('PEER_FLOOD'))
@@ -123,7 +136,8 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
         throw new AppError(
           429,
           'Telegram rate limit (PEER_FLOOD). Send fewer messages to this user or wait before retrying.',
-          ErrorCodes.RATE_LIMITED
+          ErrorCodes.RATE_LIMITED,
+          retryAfterSeconds != null ? { retryAfterSeconds } : undefined
         );
       }
       if (
@@ -146,7 +160,8 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
 
     const chatIdStr = String(chatId).trim();
     if (chatIdStr) {
-      const peerType = /^\d+$/.test(chatIdStr) && parseInt(chatIdStr, 10) > 0 ? 'user' : 'chat';
+      // Negative numeric id = group/channel; positive id or username = user (personal chat)
+      const peerType = /^-?\d+$/.test(chatIdStr) && parseInt(chatIdStr, 10) < 0 ? 'chat' : 'user';
       await pool.query(
         `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
          VALUES ($1, $2, '', $3, false, NULL)
@@ -189,7 +204,7 @@ export function messagingRouter({ pool, log, telegramManager }: Deps): Router {
       try {
         await telegramManager.sendMessage(id, chatId, text, {});
         sent++;
-        const peerType = /^\d+$/.test(chatId) && parseInt(chatId, 10) > 0 ? 'user' : 'chat';
+        const peerType = /^-?\d+$/.test(chatId) && parseInt(chatId, 10) < 0 ? 'chat' : 'user';
         await pool.query(
           `INSERT INTO bd_account_sync_chats (bd_account_id, telegram_chat_id, title, peer_type, is_folder, folder_id)
            VALUES ($1, $2, '', $3, false, NULL)

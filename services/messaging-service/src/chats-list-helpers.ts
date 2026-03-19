@@ -167,9 +167,22 @@ export function getDefaultChatsQuery(channelParam: string): string {
   `;
 }
 
-/** Normalize chat row names for user peer_type when name equals account_name. */
+/**
+ * Treat as personal (user) when peer_type is 'chat' but channel_id is username or positive id (not a group id).
+ * Fixes campaign outreach chats that were stored with peer_type 'chat' when sending by username.
+ */
+function inferPeerType(peerType: string | null | undefined, channelId: string | null | undefined): string {
+  const cid = channelId != null ? String(channelId).trim() : '';
+  if (!cid) return peerType ?? 'user';
+  const isNegativeNumeric = /^-?\d+$/.test(cid) && parseInt(cid, 10) < 0;
+  if (peerType === 'chat' && !isNegativeNumeric) return 'user';
+  return peerType ?? 'user';
+}
+
+/** Normalize chat row names for user peer_type when name equals account_name; fix peer_type for username-based chats. */
 export function normalizeChatRows<T extends ChatListRow>(rows: T[]): T[] {
   for (const r of rows) {
+    r.peer_type = inferPeerType(r.peer_type, r.channel_id);
     if (r.peer_type === 'user' && r.account_name && typeof r.name === 'string' && r.name.trim() === String(r.account_name).trim()) {
       r.name = r.channel_id ?? r.name;
     }

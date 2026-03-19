@@ -218,7 +218,7 @@ export default function CampaignDetailPage() {
       const contactIds = Array.isArray(aud.contactIds) ? aud.contactIds : [];
       if (aud.enrichContactsBeforeStart && contactIds.length > 0) {
         try {
-          await enrichContactsFromTelegram(contactIds, aud.bdAccountId);
+          await enrichContactsFromTelegram(contactIds, aud.bdAccountIds?.[0] ?? aud.bdAccountId);
         } catch (e) {
           reportWarning('Enrich contacts before start failed', { component: 'CampaignPage', error: e });
         }

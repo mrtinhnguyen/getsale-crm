@@ -5,7 +5,7 @@ import { ServiceHttpClient, ServiceCallError } from '@getsale/service-core';
 import {
   Schedule, StepConditions,
   evaluateStepConditions, isWithinSchedule, nextSendAtWithSchedule,
-  delayHoursFromStep, nextSlotRetry, substituteVariables, ensureLeadInPipeline,
+  delayHoursFromStep, nextSlotRetry, substituteVariables, expandSpintax, ensureLeadInPipeline,
   getSentTodayByAccount,
 } from './helpers';
 import type { CampaignStep, DueParticipantRow } from './types';
@@ -22,6 +22,7 @@ export interface CampaignLoopDeps {
   messagingClient: ServiceHttpClient;
   pipelineClient: ServiceHttpClient;
   bdAccountsClient: ServiceHttpClient;
+  aiClient: ServiceHttpClient;
 }
 
 interface CampaignMeta {
@@ -29,6 +30,7 @@ interface CampaignMeta {
   sendDelaySeconds: number;
   pipeline_id: string | null;
   lead_creation_settings: { trigger?: string; default_stage_id?: string; default_responsible_id?: string } | null;
+  randomizeWithAI?: boolean;
 }
 
 export function startCampaignLoop(deps: CampaignLoopDeps): void {
@@ -65,16 +67,22 @@ async function simulateHumanBehavior(
 
 async function fetchDueParticipant(client: PoolClient): Promise<DueParticipantRow | null> {
   const due = await client.query(
-    `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id
+    `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id, ba.max_dm_per_day
      FROM campaign_participants cp
      JOIN campaigns c ON c.id = cp.campaign_id
+     JOIN bd_accounts ba ON ba.id = cp.bd_account_id AND (ba.send_blocked_until IS NULL OR ba.send_blocked_until <= NOW())
      WHERE c.status = $1 AND cp.status IN ('pending', 'sent') AND cp.next_send_at IS NOT NULL AND cp.next_send_at <= NOW()
      ORDER BY cp.next_send_at
      LIMIT 1
      FOR UPDATE OF cp SKIP LOCKED`,
     [CampaignStatus.ACTIVE]
   );
-  return due.rows.length > 0 ? due.rows[0] as DueParticipantRow : null;
+  const row = due.rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    max_dm_per_day: row.max_dm_per_day != null ? Number(row.max_dm_per_day) : null,
+  } as DueParticipantRow;
 }
 
 function checkDailyLimits(sentMap: Map<string, number>, accountId: string, dailyLimit: number): boolean {
@@ -96,13 +104,14 @@ async function loadCampaignMeta(
   if (!c) return undefined;
 
   const schedule = (c.schedule as Schedule) ?? null;
-  const aud = (c.target_audience || {}) as { sendDelaySeconds?: number };
+  const aud = (c.target_audience || {}) as { sendDelaySeconds?: number; randomizeWithAI?: boolean };
   const lcs = c.lead_creation_settings as CampaignMeta['lead_creation_settings'];
   const meta: CampaignMeta = {
     schedule,
     sendDelaySeconds: Math.max(0, aud.sendDelaySeconds ?? 0),
     pipeline_id: c.pipeline_id ?? null,
     lead_creation_settings: lcs ?? null,
+    randomizeWithAI: !!aud.randomizeWithAI,
   };
   cache.set(campaignId, meta);
   return meta;
@@ -183,6 +192,9 @@ async function sendMessageWithRetry(
       }, undefined, { userId: headers.userId, organizationId: headers.organizationId });
     } catch (err) {
       lastErr = err;
+      if (err instanceof ServiceCallError && err.statusCode === 429) {
+        throw err;
+      }
       const isNotConnected = isNotConnectedError(err);
       if (isNotConnected && notConnectedRetries < NOT_CONNECTED_EXTRA_RETRIES) {
         notConnectedRetries++;
@@ -250,7 +262,7 @@ async function processParticipant(
   sentMap: Map<string, number>,
   deps: CampaignLoopDeps
 ): Promise<void> {
-  const { log, messagingClient, pipelineClient, bdAccountsClient } = deps;
+  const { log, messagingClient, pipelineClient, bdAccountsClient, aiClient } = deps;
   const schedule = meta?.schedule ?? null;
 
   const contactRes = await pool.query(
@@ -273,7 +285,41 @@ async function processParticipant(
 
   const userRow = await pool.query('SELECT id FROM users WHERE organization_id = $1 LIMIT 1', [row.organization_id]);
   const systemUserId = userRow.rows[0]?.id || '';
-  const content = substituteVariables(step.content || '', contact, company);
+  let content = expandSpintax(substituteVariables(step.content || '', contact, company));
+  if (meta?.randomizeWithAI) {
+    log.info({
+      message: 'Campaign AI rephrase requested',
+      campaignId: row.campaign_id,
+      participantId: row.participant_id,
+    });
+    try {
+      const result = await aiClient.post<{ content?: string }>(
+        '/api/ai/campaigns/rephrase',
+        { text: content },
+        undefined,
+        { userId: systemUserId, organizationId: row.organization_id }
+      );
+      if (result?.content && typeof result.content === 'string') {
+        content = result.content;
+        log.info({
+          message: 'Using AI rephrased content for participant',
+          campaignId: row.campaign_id,
+          participantId: row.participant_id,
+        });
+      }
+    } catch (err) {
+      const statusCode = err instanceof ServiceCallError ? err.statusCode : undefined;
+      const body = err instanceof ServiceCallError && err.body != null ? err.body : undefined;
+      log.warn({
+        message: 'AI rephrase failed, using original campaign text',
+        campaignId: row.campaign_id,
+        participantId: row.participant_id,
+        error: err instanceof Error ? err.message : String(err),
+        ...(statusCode != null && { statusCode }),
+        ...(body != null && { responseBody: body }),
+      });
+    }
+  }
 
   await simulateHumanBehavior(bdAccountsClient, row.bd_account_id, row.channel_id, content.length, row.organization_id, log);
 
@@ -294,19 +340,27 @@ async function processParticipant(
 
     const is429 = sendErr instanceof ServiceCallError && sendErr.statusCode === 429;
     if (is429) {
-      const retryAt = new Date(Date.now() + CAMPAIGN_429_RETRY_AFTER_MINUTES * 60 * 1000);
+      const body = sendErr.body as { details?: { retryAfterSeconds?: number } } | undefined;
+      const retryAfterSeconds =
+        body?.details?.retryAfterSeconds ?? CAMPAIGN_429_RETRY_AFTER_MINUTES * 60;
+      const retryAt = new Date(Date.now() + retryAfterSeconds * 1000);
       await client.query(
         `UPDATE campaign_participants SET next_send_at = $1, metadata = $2, updated_at = NOW() WHERE id = $3`,
         [
           retryAt.toISOString(),
-          JSON.stringify({ lastError: reasonMessage, last429At: new Date().toISOString() }),
+          JSON.stringify({ lastError: reasonMessage, last429At: new Date().toISOString(), retryAfterSeconds }),
           row.participant_id,
         ]
+      );
+      await client.query(
+        `UPDATE bd_accounts SET send_blocked_until = $1 WHERE id = $2`,
+        [retryAt.toISOString(), row.bd_account_id]
       );
       await client.query('COMMIT');
       log.warn({
         message: 'Campaign send rate limited (429), deferred retry',
         participantId: row.participant_id,
+        bdAccountId: row.bd_account_id,
         reason: reasonMessage,
         retryAt: retryAt.toISOString(),
       });
@@ -388,7 +442,10 @@ async function processCampaignSends(deps: CampaignLoopDeps): Promise<void> {
           continue;
         }
 
-        if (!checkDailyLimits(sentMap, row.bd_account_id, CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY)) {
+        const accountDailyLimit = row.max_dm_per_day != null && row.max_dm_per_day >= 0
+          ? row.max_dm_per_day
+          : CAMPAIGN_MAX_SENDS_PER_ACCOUNT_PER_DAY;
+        if (!checkDailyLimits(sentMap, row.bd_account_id, accountDailyLimit)) {
           const tomorrowStart = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z');
           tomorrowStart.setUTCDate(tomorrowStart.getUTCDate() + 1);
           await client.query(

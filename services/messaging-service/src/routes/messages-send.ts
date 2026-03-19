@@ -179,10 +179,14 @@ export function registerSendRoutes(router: Router, deps: MessagesRouterDeps): vo
           return res.status(413).json({ error: 'File too large', message: 'File too large' });
         }
         if (error instanceof ServiceCallError && error.statusCode >= 400 && error.statusCode < 500) {
-          return res.status(error.statusCode).json({
+          const json: { error: string; message: string; details?: unknown } = {
             error: downstreamMessage || 'Bad request',
             message: downstreamMessage || 'Failed to send message',
-          });
+          };
+          if (error.statusCode === 429 && error.body != null && typeof error.body === 'object' && 'details' in error.body) {
+            json.details = (error.body as { details?: unknown }).details;
+          }
+          return res.status(error.statusCode).json(json);
         }
         const status = error instanceof ServiceCallError && error.statusCode >= 500 ? error.statusCode : 500;
         return res.status(status).json({

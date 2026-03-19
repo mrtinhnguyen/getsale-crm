@@ -7,8 +7,13 @@ export interface CampaignTargetAudience {
   limit?: number;
   onlyNew?: boolean;
   contactIds?: string[];
+  /** Single account (legacy). Prefer bdAccountIds when multiple. */
   bdAccountId?: string;
+  /** Multiple BD accounts for the campaign; system distributes participants round-robin. */
+  bdAccountIds?: string[];
   sendDelaySeconds?: number;
+  /** Rephrase message text via AI (OpenRouter) for randomization. */
+  randomizeWithAI?: boolean;
   /** Перед запуском обогащать контакты из Telegram (getEntity → first_name, last_name, username). */
   enrichContactsBeforeStart?: boolean;
   /** Dynamic campaign: auto-add leads when they enter one of these stages in the given pipeline */
@@ -132,6 +137,8 @@ export interface CampaignParticipantRow {
   contact_name: string;
   conversation_id: string | null;
   bd_account_id: string | null;
+  /** Display name of the BD account that sends to this participant. */
+  bd_account_display_name?: string | null;
   channel_id: string | null;
   status_phase: CampaignParticipantPhase;
   /** Last delivery error (e.g. PEER_FLOOD) when status_phase is 'failed'. */
@@ -326,9 +333,28 @@ export async function fetchCampaignParticipants(
   return data;
 }
 
+export interface CampaignParticipantAccount {
+  id: string;
+  displayName: string;
+}
+
+export async function fetchCampaignParticipantAccounts(campaignId: string): Promise<CampaignParticipantAccount[]> {
+  const { data } = await apiClient.get<CampaignParticipantAccount[]>(
+    `/api/campaigns/${campaignId}/participant-accounts`
+  );
+  return Array.isArray(data) ? data : [];
+}
+
 export async function fetchCampaignParticipantRows(
   campaignId: string,
-  params?: { page?: number; limit?: number; filter?: 'all' | 'replied' | 'not_replied' | 'shared' }
+  params?: {
+    page?: number;
+    limit?: number;
+    filter?: 'all' | 'replied' | 'not_replied' | 'shared';
+    bdAccountId?: string;
+    sentFrom?: string;
+    sentTo?: string;
+  }
 ): Promise<CampaignParticipantRow[]> {
   const { data } = await apiClient.get<CampaignParticipantRow[]>(
     `/api/campaigns/${campaignId}/participants`,
@@ -345,6 +371,8 @@ export async function fetchCampaignStats(campaignId: string): Promise<CampaignSt
 export interface CampaignAnalytics {
   sendsByDay: { date: string; sends: number }[];
   repliedByDay: { date: string; replied: number }[];
+  /** Sends grouped by date and account (last 14 days). */
+  sendsByAccountByDay?: { date: string; accountId: string; accountDisplayName: string; sends: number }[];
 }
 
 export async function fetchCampaignAnalytics(

@@ -63,9 +63,12 @@ export function CampaignAudienceSchedule({
   const [contactIds, setContactIds] = useState<string[]>(() =>
     Array.isArray(campaign.target_audience?.contactIds) ? campaign.target_audience!.contactIds! : []
   );
-  const [bdAccountId, setBdAccountId] = useState<string>(() =>
-    campaign.target_audience?.bdAccountId ?? ''
-  );
+  const [bdAccountIds, setBdAccountIds] = useState<string[]>(() => {
+    const ids = campaign.target_audience?.bdAccountIds;
+    if (Array.isArray(ids) && ids.length > 0) return ids.filter((x) => typeof x === 'string');
+    const single = campaign.target_audience?.bdAccountId;
+    return single ? [single] : [];
+  });
   const [sendDelaySeconds, setSendDelaySeconds] = useState<number>(() =>
     campaign.target_audience?.sendDelaySeconds ?? 60
   );
@@ -102,6 +105,9 @@ export function CampaignAudienceSchedule({
   const leadCreationEnabled = leadTrigger === 'on_first_send' || leadTrigger === 'on_reply';
   const [enrichContactsBeforeStart, setEnrichContactsBeforeStart] = useState<boolean>(() =>
     !!(campaign.target_audience as { enrichContactsBeforeStart?: boolean } | undefined)?.enrichContactsBeforeStart
+  );
+  const [randomizeWithAI, setRandomizeWithAI] = useState<boolean>(() =>
+    !!(campaign.target_audience as { randomizeWithAI?: boolean } | undefined)?.randomizeWithAI
   );
   const [stages, setStages] = useState<{ id: string; name: string }[]>([]);
   const [teamMembers, setTeamMembers] = useState<{ user_id: string; email?: string; first_name?: string; last_name?: string }[]>([]);
@@ -159,13 +165,16 @@ export function CampaignAudienceSchedule({
     contactIds?: string[];
     audienceSource?: AudienceSource;
     bdAccountId?: string;
+    bdAccountIds?: string[];
     enrichContactsBeforeStart?: boolean;
+    randomizeWithAI?: boolean;
     sendDelaySeconds?: number;
   } & LeadOverrides) => {
     const ids = overrides?.contactIds ?? contactIds;
     const src = overrides?.audienceSource ?? audienceSource;
-    const bdId = overrides?.bdAccountId ?? bdAccountId;
+    const accIds = overrides?.bdAccountIds ?? (overrides?.bdAccountId !== undefined ? [overrides.bdAccountId!] : bdAccountIds);
     const enrich = overrides?.enrichContactsBeforeStart ?? enrichContactsBeforeStart;
+    const randomizeAI = overrides?.randomizeWithAI ?? randomizeWithAI;
     const delay = overrides?.sendDelaySeconds ?? sendDelaySeconds;
     const trigger = overrides?.leadTrigger ?? leadTrigger;
     const pipeline = overrides?.leadPipelineId ?? leadPipelineId;
@@ -182,9 +191,11 @@ export function CampaignAudienceSchedule({
           },
           limit: 10000,
           contactIds: ids.length > 0 ? ids : undefined,
-          bdAccountId: bdId || undefined,
+          bdAccountId: accIds.length === 1 ? accIds[0] : undefined,
+          bdAccountIds: accIds.length > 0 ? accIds : undefined,
           sendDelaySeconds: Math.max(0, Math.min(3600, delay)),
           enrichContactsBeforeStart: enrich,
+          randomizeWithAI: randomizeAI,
         },
         schedule: null,
         ...(trigger && pipeline
@@ -204,7 +215,7 @@ export function CampaignAudienceSchedule({
     } finally {
       setSaving(false);
     }
-  }, [campaignId, contactIds, audienceSource, bdAccountId, companyId, pipelineId, sendDelaySeconds, enrichContactsBeforeStart, leadTrigger, leadPipelineId, leadStageId, leadResponsibleId, onUpdate]);
+  }, [campaignId, contactIds, audienceSource, bdAccountIds, companyId, pipelineId, sendDelaySeconds, enrichContactsBeforeStart, randomizeWithAI, leadTrigger, leadPipelineId, leadStageId, leadResponsibleId, onUpdate]);
 
   return (
     <div className="space-y-8 max-w-2xl">
@@ -345,22 +356,35 @@ export function CampaignAudienceSchedule({
             {t('campaigns.whoSends')}
           </h3>
           <div className="flex flex-wrap gap-3">
-            {agents.map((a) => (
-              <label
-                key={a.id}
-                className={clsx(
-                  'flex items-center gap-2 cursor-pointer px-4 py-3 rounded-xl border-2 transition-colors',
-                  bdAccountId === a.id ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted/50',
-                  !isDraft && 'opacity-60 pointer-events-none'
-                )}
-              >
-                <input type="radio" name="bdAccount" checked={bdAccountId === a.id} onChange={() => { setBdAccountId(a.id); saveAudience({ bdAccountId: a.id }); }} disabled={!isDraft} className="sr-only" />
-                <span className="text-sm font-medium text-foreground">{a.displayName}</span>
-                <span className="text-xs text-muted-foreground">{t('campaigns.sentToday', { count: a.sentToday })}</span>
-              </label>
-            ))}
+            {agents.map((a) => {
+              const checked = bdAccountIds.includes(a.id);
+              return (
+                <label
+                  key={a.id}
+                  className={clsx(
+                    'flex items-center gap-2 cursor-pointer px-4 py-3 rounded-xl border-2 transition-colors',
+                    checked ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted/50',
+                    !isDraft && 'opacity-60 pointer-events-none'
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => {
+                      const next = checked ? bdAccountIds.filter((id) => id !== a.id) : [...bdAccountIds, a.id];
+                      setBdAccountIds(next);
+                      saveAudience({ bdAccountIds: next });
+                    }}
+                    disabled={!isDraft}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-medium text-foreground">{a.displayName}</span>
+                  <span className="text-xs text-muted-foreground">{t('campaigns.sentToday', { count: a.sentToday })}</span>
+                </label>
+              );
+            })}
           </div>
-          {agents.length > 0 && !bdAccountId && isDraft && <p className="text-xs text-muted-foreground mt-2">{t('campaigns.agentAny')}</p>}
+          {agents.length > 0 && bdAccountIds.length === 0 && isDraft && <p className="text-xs text-muted-foreground mt-2">{t('campaigns.agentAny')}</p>}
         </section>
       )}
 
@@ -408,6 +432,20 @@ export function CampaignAudienceSchedule({
             className="h-4 w-4 rounded border-border text-primary focus:ring-ring"
           />
           <span className="text-sm font-medium text-foreground">{t('campaigns.enrichContactsBeforeStart')}</span>
+        </label>
+        <label className="flex items-center gap-3 cursor-pointer mt-4">
+          <input
+            type="checkbox"
+            checked={randomizeWithAI}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setRandomizeWithAI(checked);
+              saveAudience({ randomizeWithAI: checked });
+            }}
+            disabled={!isDraft}
+            className="h-4 w-4 rounded border-border text-primary focus:ring-ring"
+          />
+          <span className="text-sm font-medium text-foreground">{t('campaigns.randomizeWithAI')}</span>
         </label>
       </section>
 

@@ -7,6 +7,7 @@ import { draftsRouter } from './routes/drafts';
 import { analyzeRouter } from './routes/analyze';
 import { usageRouter } from './routes/usage';
 import { searchQueriesRouter } from './routes/search-queries';
+import { campaignRephraseRouter } from './routes/campaign-rephrase';
 import { AIRateLimiter } from './rate-limiter';
 import { DRAFT_SYSTEM, PROMPT_VERSION } from './prompts';
 
@@ -30,6 +31,13 @@ async function main() {
     log.warn({ message: 'OPENAI_API_KEY not configured. AI endpoints will return 503.' });
   } else {
     log.info({ message: 'OpenAI configured', models: JSON.stringify(models), prompt_version: PROMPT_VERSION });
+  }
+
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (openRouterKey) {
+    log.info({ message: 'OPENROUTER_API_KEY is set; campaign rephrase endpoint is available' });
+  } else {
+    log.warn({ message: 'OPENROUTER_API_KEY not set; campaign rephrase will return 503' });
   }
 
   const redis = new RedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
@@ -107,6 +115,7 @@ async function main() {
   ctx.mount('/api/ai', analyzeRouter(deps));
   ctx.mount('/api/ai', usageRouter(deps));
   ctx.mount('/api/ai', searchQueriesRouter(deps));
+  ctx.mount('/api/ai', campaignRephraseRouter({ log, rateLimiter }));
 
   ctx.start();
 }

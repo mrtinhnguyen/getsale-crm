@@ -56,8 +56,8 @@ async function processEvent(deps: EventHandlerDeps, event: any): Promise<void> {
     `SELECT cp.id, cp.campaign_id, cp.current_step, cp.next_send_at, cp.bd_account_id, cp.channel_id
      FROM campaign_participants cp
      JOIN campaigns c ON c.id = cp.campaign_id
-     WHERE cp.contact_id = $1 AND c.status IN ('active', 'completed') AND cp.status IN ('pending', 'sent', 'completed')
-     AND (($2::text IS NULL AND $3::text IS NULL) OR (cp.bd_account_id = $2 AND cp.channel_id = $3))`,
+     WHERE cp.contact_id = $1::uuid AND c.status IN ('active', 'completed') AND cp.status IN ('pending', 'sent', 'completed')
+     AND (($2::text IS NULL AND $3::text IS NULL) OR (cp.bd_account_id = $2::uuid AND cp.channel_id = $3))`,
     [contactId, bdAccountId, channelId]
   );
 
@@ -136,7 +136,7 @@ async function processEvent(deps: EventHandlerDeps, event: any): Promise<void> {
             const channelId = p.channel_id ?? null;
             if (bdAccountId && channelId) {
               const conv = await pool.query(
-                `SELECT id FROM conversations WHERE organization_id = $1 AND bd_account_id = $2 AND channel = $3 AND channel_id = $4 LIMIT 1`,
+                `SELECT id FROM conversations WHERE organization_id = $1 AND bd_account_id = $2::uuid AND channel = $3 AND channel_id = $4 LIMIT 1`,
                 [c.organization_id, bdAccountId, CHANNEL_TELEGRAM, channelId]
               );
               conversationId = conv.rows[0]?.id ?? null;
@@ -218,7 +218,7 @@ async function addContactToDynamicCampaigns(
     const telegramId = contactRow.rows[0].telegram_id;
     let channelId: string | null = String(telegramId);
     const chatRes = await pool.query(
-      'SELECT bd_account_id, telegram_chat_id FROM bd_account_sync_chats WHERE bd_account_id = $1 AND telegram_chat_id = $2 LIMIT 1',
+      'SELECT bd_account_id, telegram_chat_id FROM bd_account_sync_chats WHERE bd_account_id = $1::uuid AND telegram_chat_id = $2 LIMIT 1',
       [bdAccountId, telegramId]
     );
     if (chatRes.rows.length > 0) {

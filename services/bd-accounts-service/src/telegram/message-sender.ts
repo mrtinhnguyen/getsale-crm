@@ -1,8 +1,12 @@
 // @ts-nocheck — GramJS types are incomplete
 import { Api } from 'telegram';
 import { getErrorMessage } from '../helpers';
+import { isUsernameLike, resolveUsernameToInputPeer } from './resolve-username';
 import type { TelegramManagerDeps, TelegramClientInfo, StructuredLog } from './types';
 import type { Pool } from 'pg';
+
+/** Minimum delay (ms) before send after a resolve/session call to avoid Telegram rate limits. */
+const SEND_DELAY_AFTER_RESOLVE_MS = 300;
 
 /**
  * Sending messages, typing, read receipts, drafts.
@@ -78,11 +82,7 @@ export class MessageSender {
       ...(opts.replyTo != null ? { replyTo: opts.replyTo } : {}),
     };
 
-    try {
-      let peer: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
-      if (typeof peer === 'string' && peer.length > 0 && Number.isNaN(Number(peer))) {
-        peer = await client.getInputEntity(peer);
-      }
+    const trySend = async (peer: Api.TypeInputPeer | number | string): Promise<Api.Message> => {
       const message = await client.sendMessage(peer, params);
       clientInfo.lastActivity = new Date();
       await this.pool.query(
@@ -90,6 +90,28 @@ export class MessageSender {
         [accountId]
       );
       return message;
+    };
+
+    try {
+      let peer: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
+
+      // Username: resolve via contacts.ResolveUsername first (guaranteed delivery, no cache dependency)
+      if (typeof peer === 'string' && peer.length > 0 && isUsernameLike(peer)) {
+        const resolved = await resolveUsernameToInputPeer(client, peer);
+        if (resolved) {
+          if (SEND_DELAY_AFTER_RESOLVE_MS > 0) {
+            await new Promise((r) => setTimeout(r, SEND_DELAY_AFTER_RESOLVE_MS));
+          }
+          return trySend(resolved);
+        }
+        peer = await client.getInputEntity(peer);
+        return trySend(peer);
+      }
+
+      if (typeof peer === 'string' && peer.length > 0 && Number.isNaN(Number(peer))) {
+        peer = await client.getInputEntity(peer);
+      }
+      return trySend(peer);
     } catch (firstError: unknown) {
       const errMsg = getErrorMessage(firstError);
       const isEntityNotFound =
@@ -98,22 +120,23 @@ export class MessageSender {
           errMsg.includes('input entity') ||
           errMsg.includes('PEER_ID_INVALID') ||
           errMsg.includes('CHAT_ID_INVALID'));
-      // Созданный общий чат не в кэше; getDialogs() подгрузит его (как при синхронизации), после ретрая отправка работает.
+      // Prime dialog cache (e.g. new shared chat or numeric user id never seen); retry send.
       if (isEntityNotFound) {
         try {
           await client.getDialogs({ limit: 100 });
+          if (SEND_DELAY_AFTER_RESOLVE_MS > 0) {
+            await new Promise((r) => setTimeout(r, SEND_DELAY_AFTER_RESOLVE_MS));
+          }
           let peerRetry: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
-          if (typeof peerRetry === 'string' && peerRetry.length > 0 && Number.isNaN(Number(peerRetry))) {
+          if (typeof peerRetry === 'string' && peerRetry.length > 0 && isUsernameLike(peerRetry)) {
+            const resolved = await resolveUsernameToInputPeer(client, peerRetry);
+            if (resolved) return trySend(resolved);
+            peerRetry = await client.getInputEntity(peerRetry);
+          } else if (typeof peerRetry === 'string' && peerRetry.length > 0 && Number.isNaN(Number(peerRetry))) {
             peerRetry = await client.getInputEntity(peerRetry);
           }
-          const message = await client.sendMessage(peerRetry, params);
-          clientInfo.lastActivity = new Date();
-          await this.pool.query(
-            'UPDATE bd_accounts SET last_activity = NOW() WHERE id = $1',
-            [accountId]
-          );
           this.log.info({ message: 'sendMessage succeeded after getDialogs cache prime', accountId, chatId });
-          return message;
+          return trySend(peerRetry);
         } catch (retryError: unknown) {
           this.log.error({ message: `Error sending message (after cache prime)`, error: getErrorMessage(retryError) });
           throw retryError;

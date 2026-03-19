@@ -296,6 +296,8 @@ services:
       - RABBITMQ_URL=amqp://getsale:getsale_dev@rabbitmq:5672
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
     depends_on:
       redis:
         condition: service_healthy
@@ -587,6 +589,7 @@ services:
       - MESSAGING_SERVICE_URL=http://messaging-service:3003
       - PIPELINE_SERVICE_URL=http://pipeline-service:3008
       - BD_ACCOUNTS_SERVICE_URL=http://bd-accounts-service:3007
+      - AI_SERVICE_URL=http://ai-service:3005
     depends_on:
       postgres:
         condition: service_healthy

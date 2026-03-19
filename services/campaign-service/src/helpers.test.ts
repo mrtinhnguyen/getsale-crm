@@ -3,6 +3,7 @@ import {
   getContactField,
   evalContactRule,
   substituteVariables,
+  expandSpintax,
   delayHoursFromStep,
   parseCsvLine,
   parseCsv,
@@ -61,6 +62,25 @@ describe('substituteVariables', () => {
 
   it('normalizes whitespace', () => {
     expect(substituteVariables('  a   b  ', {}, null)).toBe('a b');
+  });
+});
+
+describe('expandSpintax', () => {
+  it('picks one option from spintax block', () => {
+    const result = expandSpintax('{A|B|C}');
+    expect(['A', 'B', 'C']).toContain(result);
+    expect(result).not.toContain('|');
+    expect(result).not.toContain('{');
+  });
+
+  it('expands multiple blocks', () => {
+    const result = expandSpintax('{Hi|Hello}, {world|there}');
+    expect(['Hi', 'Hello']).toContain(result.split(',')[0]?.trim());
+    expect(['world', 'there']).toContain(result.split(',')[1]?.trim());
+  });
+
+  it('leaves text without spintax unchanged', () => {
+    expect(expandSpintax('No spintax here')).toBe('No spintax here');
   });
 });
 

@@ -164,6 +164,28 @@ export function participantsRouter({ pool, log }: Deps): Router {
     });
   }));
 
+  router.get('/:id/participant-accounts', asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { id } = req.params;
+    const campaign = await pool.query(
+      'SELECT id FROM campaigns WHERE id = $1 AND organization_id = $2',
+      [id, organizationId]
+    );
+    if (campaign.rows.length === 0) {
+      throw new AppError(404, 'Campaign not found', ErrorCodes.NOT_FOUND);
+    }
+    const accounts = await pool.query(
+      `SELECT DISTINCT cp.bd_account_id AS id,
+         COALESCE(NULLIF(TRIM(ba.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(ba.first_name,''), ' ', COALESCE(ba.last_name,''))), ''), ba.phone_number, ba.telegram_id::text, cp.bd_account_id::text) AS display_name
+       FROM campaign_participants cp
+       LEFT JOIN bd_accounts ba ON ba.id = cp.bd_account_id
+       WHERE cp.campaign_id = $1 AND cp.bd_account_id IS NOT NULL
+       ORDER BY display_name`,
+      [id]
+    );
+    res.json((accounts.rows as { id: string; display_name: string }[]).map((r) => ({ id: r.id, displayName: r.display_name ?? r.id })));
+  }));
+
   router.get('/:id/analytics', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
@@ -176,33 +198,53 @@ export function participantsRouter({ pool, log }: Deps): Router {
       throw new AppError(404, 'Campaign not found', ErrorCodes.NOT_FOUND);
     }
     const daysNum = Math.min(90, Math.max(1, parseInt(String(days), 10)));
-    const sendsByDay = await pool.query(
-      `SELECT cs.sent_at::date AS day, COUNT(DISTINCT cp.id)::int AS sends
-       FROM campaign_sends cs
-       JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
-       WHERE cp.campaign_id = $1 AND cs.sent_at >= NOW() - ($2::int || ' days')::interval
-       GROUP BY cs.sent_at::date
-       ORDER BY day`,
-      [id, daysNum]
-    );
-    const repliedByDay = await pool.query(
-      `SELECT cp.updated_at::date AS day, COUNT(*)::int AS replied
-       FROM campaign_participants cp
-       WHERE cp.campaign_id = $1 AND cp.status = 'replied' AND cp.updated_at >= NOW() - ($2::int || ' days')::interval
-       GROUP BY cp.updated_at::date
-       ORDER BY day`,
-      [id, daysNum]
-    );
+    const [sendsByDayRes, repliedByDayRes, sendsByAccountByDayRes] = await Promise.all([
+      pool.query(
+        `SELECT cs.sent_at::date AS day, COUNT(DISTINCT cp.id)::int AS sends
+         FROM campaign_sends cs
+         JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+         WHERE cp.campaign_id = $1 AND cs.sent_at >= NOW() - ($2::int || ' days')::interval
+         GROUP BY cs.sent_at::date
+         ORDER BY day`,
+        [id, daysNum]
+      ),
+      pool.query(
+        `SELECT cp.updated_at::date AS day, COUNT(*)::int AS replied
+         FROM campaign_participants cp
+         WHERE cp.campaign_id = $1 AND cp.status = 'replied' AND cp.updated_at >= NOW() - ($2::int || ' days')::interval
+         GROUP BY cp.updated_at::date
+         ORDER BY day`,
+        [id, daysNum]
+      ),
+      pool.query(
+        `SELECT cs.sent_at::date AS date, cp.bd_account_id AS account_id,
+          MAX(COALESCE(NULLIF(TRIM(ba.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(ba.first_name,''), ' ', COALESCE(ba.last_name,''))), ''), ba.telegram_id::text, cp.bd_account_id::text)) AS account_display_name,
+          COUNT(*)::int AS sends
+         FROM campaign_sends cs
+         JOIN campaign_participants cp ON cp.id = cs.campaign_participant_id
+         LEFT JOIN bd_accounts ba ON ba.id = cp.bd_account_id
+         WHERE cp.campaign_id = $1 AND cs.sent_at >= NOW() - ($2::int || ' days')::interval
+         GROUP BY cs.sent_at::date, cp.bd_account_id
+         ORDER BY date, cp.bd_account_id`,
+        [id, daysNum]
+      ),
+    ]);
     res.json({
-      sendsByDay: (sendsByDay.rows as { day: string; sends: number }[]).map((r) => ({ date: r.day, sends: r.sends })),
-      repliedByDay: (repliedByDay.rows as { day: string; replied: number }[]).map((r) => ({ date: r.day, replied: r.replied })),
+      sendsByDay: (sendsByDayRes.rows as { day: string; sends: number }[]).map((r) => ({ date: r.day, sends: r.sends })),
+      repliedByDay: (repliedByDayRes.rows as { day: string; replied: number }[]).map((r) => ({ date: r.day, replied: r.replied })),
+      sendsByAccountByDay: (sendsByAccountByDayRes.rows as { date: string; account_id: string; account_display_name: string; sends: number }[]).map((r) => ({
+        date: r.date,
+        accountId: r.account_id,
+        accountDisplayName: r.account_display_name ?? r.account_id,
+        sends: r.sends,
+      })),
     });
   }));
 
   router.get('/:id/participants', asyncHandler(async (req, res) => {
     const { organizationId } = req.user;
     const { id } = req.params;
-    const { page = 1, limit = 50, status, filter } = req.query;
+    const { page = 1, limit = 50, status, filter, bdAccountId, sentFrom, sentTo } = req.query;
     const campaign = await pool.query(
       'SELECT id FROM campaigns WHERE id = $1 AND organization_id = $2',
       [id, organizationId]
@@ -216,17 +258,34 @@ export function participantsRouter({ pool, log }: Deps): Router {
     let whereStatus = '';
     let whereFilter = '';
     const params: any[] = [id];
+    let paramIdx = 2;
     const statusParam = status && typeof status === 'string' ? status : (filter && typeof filter === 'string' ? filter : null);
     if (statusParam === CampaignParticipantFilter.REPLIED) {
-      whereStatus = ' AND cp.status = $2';
+      whereStatus = ` AND cp.status = $${paramIdx}`;
       params.push(CampaignParticipantFilter.REPLIED);
+      paramIdx++;
     } else if (statusParam === CampaignParticipantFilter.NOT_REPLIED) {
       whereStatus = " AND (cp.status IS NULL OR cp.status != 'replied')";
     } else if (statusParam === CampaignParticipantFilter.SHARED) {
       whereFilter = ' AND conv.shared_chat_created_at IS NOT NULL';
     }
-    const limitIdx = params.length + 1;
-    const offsetIdx = params.length + 2;
+    if (bdAccountId && typeof bdAccountId === 'string') {
+      whereFilter += ` AND cp.bd_account_id = $${paramIdx}`;
+      params.push(bdAccountId);
+      paramIdx++;
+    }
+    if (sentFrom && typeof sentFrom === 'string') {
+      whereFilter += ` AND fs.first_sent_at IS NOT NULL AND fs.first_sent_at::date >= $${paramIdx}::date`;
+      params.push(sentFrom);
+      paramIdx++;
+    }
+    if (sentTo && typeof sentTo === 'string') {
+      whereFilter += ` AND fs.first_sent_at IS NOT NULL AND fs.first_sent_at::date <= $${paramIdx}::date`;
+      params.push(sentTo);
+      paramIdx++;
+    }
+    const limitIdx = paramIdx;
+    const offsetIdx = paramIdx + 1;
     params.push(limitNum, offset);
     const result = await pool.query(
       `SELECT
@@ -242,6 +301,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
          cp.created_at AS participant_created_at,
          cp.updated_at AS participant_updated_at,
          COALESCE(NULLIF(TRIM(c.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), ''), c.username, c.telegram_id::text) AS contact_name,
+         COALESCE(NULLIF(TRIM(ba.display_name), ''), NULLIF(TRIM(CONCAT(COALESCE(ba.first_name,''), ' ', COALESCE(ba.last_name,''))), ''), ba.phone_number, ba.telegram_id::text, cp.bd_account_id::text) AS bd_account_display_name,
          conv.id AS conversation_id,
          conv.shared_chat_created_at,
          st.name AS pipeline_stage_name,
@@ -250,6 +310,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
          (m_first.status = 'read') AS first_message_read
        FROM campaign_participants cp
        JOIN contacts c ON c.id = cp.contact_id
+       LEFT JOIN bd_accounts ba ON ba.id = cp.bd_account_id
        LEFT JOIN LATERAL (
          SELECT cs.sent_at AS first_sent_at, cs.message_id AS first_message_id
          FROM campaign_sends cs WHERE cs.campaign_participant_id = cp.id ORDER BY cs.sent_at LIMIT 1
@@ -289,6 +350,7 @@ export function participantsRouter({ pool, log }: Deps): Router {
         contact_name: r.contact_name ?? '',
         conversation_id: r.conversation_id,
         bd_account_id: r.bd_account_id ?? null,
+        bd_account_display_name: r.bd_account_display_name ?? null,
         channel_id: r.channel_id ?? null,
         status_phase: phase,
         last_error: last_error ?? null,

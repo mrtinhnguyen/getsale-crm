@@ -50,6 +50,8 @@ export interface DueParticipantRow {
   current_step: number;
   status: string;
   organization_id: string;
+  /** Per-account daily send limit from bd_accounts.max_dm_per_day; null = use env default. */
+  max_dm_per_day?: number | null;
 }
 
 export interface CampaignCountRow {

@@ -9,6 +9,8 @@ const targetAudienceSchema = z
     dynamicPipelineId: z.string().uuid().optional(),
     dynamicStageIds: z.array(z.string().uuid()).optional(),
     bdAccountId: z.string().uuid().optional(),
+    bdAccountIds: z.array(z.string().uuid()).optional(),
+    randomizeWithAI: z.boolean().optional(),
   })
   .passthrough()
   .optional()

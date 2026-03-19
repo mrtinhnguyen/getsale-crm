@@ -54,14 +54,18 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
-    const campaigns = result.rows as { id: string; target_audience?: { bdAccountId?: string } }[];
+    const campaigns = result.rows as { id: string; target_audience?: { bdAccountId?: string; bdAccountIds?: string[] } }[];
 
     if (campaigns.length === 0) {
       return res.json({ data: [], total: totalCount, page, limit, summary: { total_sent: 0, total_replied: 0, total_won: 0 } });
     }
 
     const ids = campaigns.map((c) => c.id);
-    const bdAccountIds = [...new Set(campaigns.map((c) => c.target_audience?.bdAccountId).filter(Boolean))] as string[];
+    const bdAccountIds = [...new Set(campaigns.flatMap((c) => {
+      const aud = c.target_audience;
+      if (aud?.bdAccountIds?.length) return aud.bdAccountIds;
+      return aud?.bdAccountId ? [aud.bdAccountId] : [];
+    }))] as string[];
 
     const [sentRes, repliedRes, sharedRes, readRes, wonRes, revenueRes, bdAccountsRes] = await Promise.all([
       pool.query(
@@ -129,7 +133,11 @@ export function campaignsRouter({ pool, rabbitmq, log }: Deps): Router {
         total_converted_to_shared_chat: sharedMap.get(c.id) ?? 0,
         total_won: won,
         total_revenue: revenueMap.get(c.id) ?? 0,
-        bd_account_name: c.target_audience?.bdAccountId ? (bdAccountNameMap.get(c.target_audience.bdAccountId) ?? null) : null,
+        bd_account_name: (() => {
+          const aud = c.target_audience;
+          const firstId = aud?.bdAccountIds?.[0] ?? aud?.bdAccountId;
+          return firstId ? (bdAccountNameMap.get(firstId) ?? null) : null;
+        })(),
       };
     });
 

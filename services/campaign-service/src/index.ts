@@ -33,6 +33,19 @@ async function main() {
     retries: 2,
   }, log);
 
+  const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:3005';
+  const aiClient = new ServiceHttpClient({
+    baseUrl: aiServiceUrl,
+    name: 'ai-service',
+    retries: 1,
+    timeoutMs: 25_000,
+  }, log);
+  log.info({
+    message: 'AI service client configured for campaign rephrase',
+    aiServiceUrl,
+    hint: !process.env.AI_SERVICE_URL ? 'AI_SERVICE_URL not set, using default. Set it in .env or docker so campaign-service can reach ai-service.' : undefined,
+  });
+
   try {
     await subscribeToEvents({ pool, rabbitmq, log, pipelineClient });
   } catch (error) {
@@ -42,7 +55,7 @@ async function main() {
     });
   }
 
-  startCampaignLoop({ pool, log, messagingClient, pipelineClient, bdAccountsClient });
+  startCampaignLoop({ pool, log, messagingClient, pipelineClient, bdAccountsClient, aiClient });
 
   const routeDeps = { pool, rabbitmq, log };
 

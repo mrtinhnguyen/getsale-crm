@@ -235,6 +235,16 @@ export function parseCsv(content: string): string[][] {
   return lines.map((l) => parseCsvLine(l, delimiter));
 }
 
+/** Spintax: {option1|option2|option3} → one option chosen at random per occurrence. */
+export function expandSpintax(text: string): string {
+  const re = /\{([^{}|]+(?:\|[^{}|]+)*)\}/g;
+  return text.replace(re, (_match, options: string) => {
+    const parts = options.split('|').map((s) => s.trim());
+    if (parts.length === 0) return '';
+    return parts[Math.floor(Math.random() * parts.length)] ?? '';
+  });
+}
+
 export function substituteVariables(
   content: string,
   contact: { first_name?: string | null; last_name?: string | null },

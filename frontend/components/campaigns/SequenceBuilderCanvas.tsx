@@ -649,17 +649,6 @@ function StepEditModal({
               rows={5}
               className="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring resize-y"
             />
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="aiRewrite"
-                disabled
-                className="rounded border-border opacity-50"
-              />
-              <label htmlFor="aiRewrite" className="text-sm text-muted-foreground">
-                {t('campaigns.aiRewriteStub')}
-              </label>
-            </div>
             <p className="text-xs text-muted-foreground mt-1.5 mb-2">
               {t('campaigns.variablesHint')}
             </p>

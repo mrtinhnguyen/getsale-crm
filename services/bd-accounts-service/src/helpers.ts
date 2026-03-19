@@ -20,6 +20,21 @@ export function getErrorCode(err: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** Extract retry_after seconds from Telegram FloodWaitError or "A wait of N seconds" message. */
+export function getRetryAfterSeconds(err: unknown): number | undefined {
+  if (err != null && typeof err === 'object' && 'seconds' in err) {
+    const s = (err as { seconds: unknown }).seconds;
+    if (typeof s === 'number' && s >= 0 && s <= 86400 * 7) return Math.ceil(s);
+  }
+  const msg = getErrorMessage(err);
+  const match = typeof msg === 'string' ? msg.match(/wait of (\d+) seconds?/i) : null;
+  if (match) {
+    const n = parseInt(match[1], 10);
+    if (!Number.isNaN(n) && n >= 0 && n <= 86400 * 7) return n;
+  }
+  return undefined;
+}
 import { TelegramManager } from './telegram';
 
 /** Row from bd_account_sync_folders (folder_id). */

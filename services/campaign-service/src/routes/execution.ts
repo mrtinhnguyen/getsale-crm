@@ -46,6 +46,7 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
       onlyNew?: boolean;
       contactIds?: string[];
       bdAccountId?: string;
+      bdAccountIds?: string[];
     };
     const limit = Math.min(audience.limit ?? 5000, 10000);
 
@@ -102,26 +103,33 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
     const contactsResult = await pool.query(contactsQuery, queryParams);
     const contacts = contactsResult.rows;
 
-    let defaultBdAccountId: string | null = null;
-    if (audience.bdAccountId) {
+    const bdAccountIdsRaw = audience.bdAccountIds ?? (audience.bdAccountId ? [audience.bdAccountId] : []);
+    const bdAccountIdsFiltered = bdAccountIdsRaw.filter((id): id is string => typeof id === 'string');
+    let accountIds: string[] = [];
+    if (bdAccountIdsFiltered.length > 0) {
       const check = await pool.query(
-        'SELECT id FROM bd_accounts WHERE id = $1 AND organization_id = $2 AND is_active = true',
-        [audience.bdAccountId, organizationId]
+        'SELECT id FROM bd_accounts WHERE id = ANY($1::uuid[]) AND organization_id = $2 AND is_active = true',
+        [bdAccountIdsFiltered, organizationId]
       );
-      defaultBdAccountId = check.rows[0]?.id || null;
+      const order = new Map(bdAccountIdsFiltered.map((id, i) => [id, i]));
+      accountIds = (check.rows as { id: string }[])
+        .map((r) => r.id)
+        .sort((a, b) => (order.get(a) ?? 999) - (order.get(b) ?? 999));
     }
-    if (!defaultBdAccountId) {
-      const bdAccountRes = await pool.query(
-        `SELECT id FROM bd_accounts WHERE organization_id = $1 AND is_active = true LIMIT 1`,
+    if (accountIds.length === 0) {
+      const fallback = await pool.query(
+        'SELECT id FROM bd_accounts WHERE organization_id = $1 AND is_active = true LIMIT 1',
         [organizationId]
       );
-      defaultBdAccountId = bdAccountRes.rows[0]?.id || null;
+      accountIds = fallback.rows.length > 0 ? [fallback.rows[0].id] : [];
     }
 
     const now = new Date();
     let insertedCount = 0;
+    let contactIndex = 0;
     for (const row of contacts) {
-      let bdAccountId = defaultBdAccountId;
+      let bdAccountId = accountIds.length > 0 ? accountIds[contactIndex % accountIds.length]! : null;
+      contactIndex++;
       const telegramId = row.telegram_id != null && String(row.telegram_id).trim() !== '' ? String(row.telegram_id).trim() : null;
       const usernameRaw = row.username != null ? String(row.username).trim().replace(/^@/, '') : null;
       const usernameNorm = usernameRaw !== '' ? usernameRaw : null;

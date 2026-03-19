@@ -190,7 +190,13 @@ export class ServiceHttpClient {
           throw err;
         }
 
-        this.circuitBreaker.recordFailure();
+        // Do not count 502 (downstream/Telegram error) or 429 (rate limit) as circuit failure —
+        // otherwise FloodWait/PEER_FLOOD from Telegram would open the circuit and block all sends.
+        const skipCircuitFailure =
+          err instanceof ServiceCallError && (err.statusCode === 502 || err.statusCode === 429);
+        if (!skipCircuitFailure) {
+          this.circuitBreaker.recordFailure();
+        }
 
         if (attempt < this.retries) {
           if (!this.circuitBreaker.canExecute()) {
