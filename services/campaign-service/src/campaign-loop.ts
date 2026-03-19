@@ -3,9 +3,16 @@ import { Logger } from '@getsale/logger';
 import { CampaignStatus } from '@getsale/types';
 import { ServiceHttpClient, ServiceCallError } from '@getsale/service-core';
 import {
-  Schedule, StepConditions,
-  evaluateStepConditions, isWithinSchedule, nextSendAtWithSchedule,
-  delayHoursFromStep, nextSlotRetry, substituteVariables, expandSpintax, ensureLeadInPipeline,
+  Schedule,
+  StepConditions,
+  evaluateStepConditions,
+  isWithinSchedule,
+  nextSendAtWithSchedule,
+  delayHoursFromStep,
+  nextSlotRetry,
+  substituteVariables,
+  expandSpintax,
+  ensureLeadInPipeline,
   getSentTodayByAccount,
 } from './helpers';
 import type { CampaignStep, DueParticipantRow } from './types';
@@ -67,12 +74,12 @@ async function simulateHumanBehavior(
 
 async function fetchDueParticipant(client: PoolClient): Promise<DueParticipantRow | null> {
   const due = await client.query(
-    `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id, ba.max_dm_per_day
+    `SELECT cp.id as participant_id, cp.campaign_id, cp.contact_id, cp.bd_account_id, cp.channel_id, cp.current_step, cp.status as status, c.organization_id, COALESCE(cp.enqueue_order, 0) AS enqueue_order, ba.max_dm_per_day
      FROM campaign_participants cp
      JOIN campaigns c ON c.id = cp.campaign_id
      JOIN bd_accounts ba ON ba.id = cp.bd_account_id AND (ba.send_blocked_until IS NULL OR ba.send_blocked_until <= NOW())
      WHERE c.status = $1 AND cp.status IN ('pending', 'sent') AND cp.next_send_at IS NOT NULL AND cp.next_send_at <= NOW()
-     ORDER BY cp.next_send_at
+     ORDER BY cp.next_send_at ASC, cp.enqueue_order ASC
      LIMIT 1
      FOR UPDATE OF cp SKIP LOCKED`,
     [CampaignStatus.ACTIVE]
@@ -81,6 +88,7 @@ async function fetchDueParticipant(client: PoolClient): Promise<DueParticipantRo
   if (!row) return null;
   return {
     ...row,
+    enqueue_order: row.enqueue_order != null ? Number(row.enqueue_order) : 0,
     max_dm_per_day: row.max_dm_per_day != null ? Number(row.max_dm_per_day) : null,
   } as DueParticipantRow;
 }
@@ -141,15 +149,21 @@ async function advanceToNextStep(
   participantId: string,
   currentStep: number,
   steps: CampaignStep[],
-  schedule: Schedule
+  schedule: Schedule,
+  opts?: { enqueueOrder?: number; sendDelaySeconds?: number }
 ): Promise<void> {
+  const enqueueOrder = opts?.enqueueOrder ?? 0;
+  const sendDelaySeconds = Math.max(0, opts?.sendDelaySeconds ?? 0);
   const nextStep = steps[currentStep + 1];
   if (nextStep) {
     const nextTriggerType = nextStep.trigger_type || 'delay';
     const nextSendAt =
       nextTriggerType === 'after_reply'
         ? null
-        : nextSendAtWithSchedule(new Date(), delayHoursFromStep(nextStep), schedule);
+        : (() => {
+            const base = nextSendAtWithSchedule(new Date(), delayHoursFromStep(nextStep), schedule);
+            return new Date(base.getTime() + enqueueOrder * sendDelaySeconds * 1000);
+          })();
     await client.query(
       `UPDATE campaign_participants SET current_step = $1, status = 'sent', next_send_at = $2, updated_at = NOW() WHERE id = $3`,
       [currentStep + 1, nextSendAt, participantId]
@@ -278,7 +292,10 @@ async function processParticipant(
     pool, row.organization_id, row.contact_id, conditions, contact, row.status
   );
   if (!shouldSend) {
-    await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule);
+    await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule, {
+      enqueueOrder: row.enqueue_order,
+      sendDelaySeconds: meta?.sendDelaySeconds ?? 0,
+    });
     await client.query('COMMIT');
     return;
   }
@@ -381,7 +398,10 @@ async function processParticipant(
     return;
   }
 
-  await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule);
+  await advanceToNextStep(client, row.participant_id, row.current_step, steps, schedule, {
+    enqueueOrder: row.enqueue_order,
+    sendDelaySeconds: meta?.sendDelaySeconds ?? 0,
+  });
   await client.query(
     `INSERT INTO campaign_sends (campaign_participant_id, sequence_step, message_id, sent_at, status) VALUES ($1, $2, $3, NOW(), 'sent')`,
     [row.participant_id, row.current_step, msgJson?.id || null]

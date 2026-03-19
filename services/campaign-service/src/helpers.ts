@@ -136,6 +136,29 @@ export function nextSlotRetry(_schedule: Schedule): Date {
   return new Date(Date.now() + 15 * 60 * 1000);
 }
 
+/**
+ * First message time for participant at queue index: base + index * sendDelaySeconds.
+ * If a working-hours schedule exists, nudge forward in 15-minute steps until the time falls inside the window.
+ */
+export function staggeredFirstSendAt(
+  baseNow: Date,
+  queueIndex: number,
+  sendDelaySeconds: number,
+  schedule: Schedule
+): Date {
+  const delayMs = Math.max(0, sendDelaySeconds) * 1000;
+  const raw = new Date(baseNow.getTime() + queueIndex * delayMs);
+  if (!schedule?.workingHours?.start || !schedule?.workingHours?.end || !schedule.daysOfWeek?.length) {
+    return raw;
+  }
+  let d = new Date(raw.getTime());
+  for (let i = 0; i < 24 * 4 * 14; i++) {
+    if (isWithinScheduleAt(d, schedule)) return d;
+    d = new Date(d.getTime() + 15 * 60 * 1000);
+  }
+  return raw;
+}
+
 export async function ensureLeadInPipeline(
   pipelineClient: ServiceHttpClient,
   log: Logger,

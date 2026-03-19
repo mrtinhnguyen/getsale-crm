@@ -9,6 +9,7 @@ import {
   parseCsv,
   dateInTz,
   isWithinScheduleAt,
+  staggeredFirstSendAt,
   type Schedule,
 } from './helpers';
 
@@ -153,5 +154,19 @@ describe('isWithinScheduleAt', () => {
     };
     const wed = new Date('2025-03-05T12:00:00.000Z'); // Wednesday
     expect(isWithinScheduleAt(wed, schedule)).toBe(false);
+  });
+});
+
+describe('staggeredFirstSendAt', () => {
+  it('offsets by queueIndex * sendDelaySeconds when schedule is incomplete', () => {
+    const base = new Date('2026-03-19T10:00:00.000Z');
+    const schedule: Schedule = {};
+    expect(staggeredFirstSendAt(base, 0, 60, schedule).getTime()).toBe(base.getTime());
+    expect(staggeredFirstSendAt(base, 2, 60, schedule).getTime()).toBe(base.getTime() + 120_000);
+  });
+
+  it('uses 0 delay when sendDelaySeconds is negative', () => {
+    const base = new Date('2026-03-19T10:00:00.000Z');
+    expect(staggeredFirstSendAt(base, 1, -5, {}).getTime()).toBe(base.getTime());
   });
 });

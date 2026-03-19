@@ -5,7 +5,13 @@ import { EventType } from '@getsale/events';
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
 import { ServiceHttpClient } from '@getsale/service-core';
-import { CHANNEL_TELEGRAM, ensureLeadInPipeline, delayHoursFromStep } from './helpers';
+import {
+  CHANNEL_TELEGRAM,
+  ensureLeadInPipeline,
+  delayHoursFromStep,
+  staggeredFirstSendAt,
+  type Schedule,
+} from './helpers';
 
 export interface EventHandlerDeps {
   pool: Pool;
@@ -197,7 +203,7 @@ async function addContactToDynamicCampaigns(
   if (contactRow.rows.length === 0 || !contactRow.rows[0].telegram_id) return;
 
   const campaigns = await pool.query(
-    `SELECT id, target_audience FROM campaigns
+    `SELECT id, target_audience, schedule FROM campaigns
      WHERE organization_id = $1 AND status = $2 AND target_audience IS NOT NULL`,
     [organizationId, CampaignStatus.ACTIVE]
   );
@@ -226,13 +232,21 @@ async function addContactToDynamicCampaigns(
     }
     if (!channelId) continue;
 
-    const sendDelaySeconds = Math.max(0, aud.sendDelaySeconds ?? 0);
-    const nextSendAt = new Date(Date.now() + sendDelaySeconds * 1000);
+    const schedule = (c.schedule as Schedule) ?? null;
+    const rawDelay = aud.sendDelaySeconds;
+    const staggerSeconds =
+      rawDelay !== undefined && rawDelay !== null ? Math.max(0, Number(rawDelay)) : 60;
+    const ord = await pool.query(
+      'SELECT COALESCE(MAX(enqueue_order), -1) + 1 AS n FROM campaign_participants WHERE campaign_id = $1',
+      [c.id]
+    );
+    const enqueueOrder = Number(ord.rows[0]?.n ?? 0);
+    const nextSendAt = staggeredFirstSendAt(new Date(), enqueueOrder, staggerSeconds, schedule);
     await pool.query(
-      `INSERT INTO campaign_participants (campaign_id, contact_id, bd_account_id, channel_id, status, current_step, next_send_at)
-       VALUES ($1, $2, $3, $4, 'pending', 0, $5)
+      `INSERT INTO campaign_participants (campaign_id, contact_id, bd_account_id, channel_id, status, current_step, next_send_at, enqueue_order)
+       VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6)
        ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
-      [c.id, contactId, bdAccountId, channelId, nextSendAt]
+      [c.id, contactId, bdAccountId, channelId, nextSendAt, enqueueOrder]
     );
   }
 }

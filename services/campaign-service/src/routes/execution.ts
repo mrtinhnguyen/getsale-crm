@@ -6,6 +6,7 @@ import { EventType, CampaignStartedEvent, CampaignPausedEvent } from '@getsale/e
 import { CampaignStatus } from '@getsale/types';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, AppError, ErrorCodes, withOrgContext } from '@getsale/service-core';
+import { staggeredFirstSendAt, type Schedule } from '../helpers';
 
 interface Deps {
   pool: Pool;
@@ -47,8 +48,14 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
       contactIds?: string[];
       bdAccountId?: string;
       bdAccountIds?: string[];
+      sendDelaySeconds?: number;
     };
     const limit = Math.min(audience.limit ?? 5000, 10000);
+    const schedule = (campaign.schedule ?? {}) as Schedule;
+    const staggerSeconds =
+      typeof audience.sendDelaySeconds === 'number' && Number.isFinite(audience.sendDelaySeconds)
+        ? Math.max(0, audience.sendDelaySeconds)
+        : 60;
 
     let contactsQuery: string;
     const queryParams: any[] = [organizationId];
@@ -126,6 +133,7 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
 
     const now = new Date();
     let insertedCount = 0;
+    let queueIndex = 0;
     let contactIndex = 0;
     for (const row of contacts) {
       let bdAccountId = accountIds.length > 0 ? accountIds[contactIndex % accountIds.length]! : null;
@@ -145,13 +153,18 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
         }
       }
       if (!channelId || !bdAccountId) continue;
-      await pool.query(
-        `INSERT INTO campaign_participants (campaign_id, contact_id, bd_account_id, channel_id, status, current_step, next_send_at)
-         VALUES ($1, $2, $3, $4, 'pending', 0, $5)
-         ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
-        [id, row.contact_id, bdAccountId, channelId, now]
+      const nextSendAt = staggeredFirstSendAt(now, queueIndex, staggerSeconds, schedule);
+      const ins = await pool.query(
+        `INSERT INTO campaign_participants (campaign_id, contact_id, bd_account_id, channel_id, status, current_step, next_send_at, enqueue_order)
+         VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6)
+         ON CONFLICT (campaign_id, contact_id) DO NOTHING
+         RETURNING id`,
+        [id, row.contact_id, bdAccountId, channelId, nextSendAt, queueIndex]
       );
-      insertedCount++;
+      if (ins.rowCount && ins.rows.length > 0) {
+        insertedCount++;
+        queueIndex++;
+      }
     }
 
     if (contacts.length > 0 && insertedCount === 0) {

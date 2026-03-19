@@ -95,6 +95,17 @@ export class MessageSender {
     try {
       let peer: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
 
+      // Important: for numeric user ids we often don't have access_hash in GramJS session cache.
+      // Telegram client resolves access_hash server-side; we mimic that by resolving the entity first.
+      if (typeof peer === 'number') {
+        try {
+          const entity = await client.getEntity(peer);
+          peer = await client.getInputEntity(entity as any);
+        } catch {
+          // Keep original peer (will be retried by outer error handler).
+        }
+      }
+
       // Username: resolve via contacts.ResolveUsername first (guaranteed delivery, no cache dependency)
       if (typeof peer === 'string' && peer.length > 0 && isUsernameLike(peer)) {
         const resolved = await resolveUsernameToInputPeer(client, peer);
@@ -128,6 +139,16 @@ export class MessageSender {
             await new Promise((r) => setTimeout(r, SEND_DELAY_AFTER_RESOLVE_MS));
           }
           let peerRetry: Api.TypeInputPeer | number | string = await this.resolvePeer(accountId, chatId);
+
+          if (typeof peerRetry === 'number') {
+            try {
+              const entity = await client.getEntity(peerRetry);
+              peerRetry = await client.getInputEntity(entity as any);
+            } catch {
+              // Keep original peer (retry send will rethrow if still not resolvable).
+            }
+          }
+
           if (typeof peerRetry === 'string' && peerRetry.length > 0 && isUsernameLike(peerRetry)) {
             const resolved = await resolveUsernameToInputPeer(client, peerRetry);
             if (resolved) return trySend(resolved);
@@ -156,7 +177,18 @@ export class MessageSender {
       const peerResolved = await this.resolvePeer(accountId, chatId);
       const peer = typeof peerResolved === 'object' && peerResolved?.className
         ? peerResolved
-        : await clientInfo.client.getInputEntity(peerResolved);
+        : await (async () => {
+          try {
+            return await clientInfo.client.getInputEntity(peerResolved as any);
+          } catch (e: unknown) {
+            // Numeric user ids may require entity resolution to get access_hash.
+            if (typeof peerResolved === 'number') {
+              const entity = await clientInfo.client.getEntity(peerResolved);
+              return await clientInfo.client.getInputEntity(entity as any);
+            }
+            throw e;
+          }
+        })();
       await clientInfo.client.invoke(
         new Api.messages.SetTyping({ peer, action: new Api.SendMessageTypingAction() })
       );
@@ -174,7 +206,17 @@ export class MessageSender {
       const peerResolved = await this.resolvePeer(accountId, chatId);
       const entity = typeof peerResolved === 'object' && (peerResolved as any)?.className
         ? peerResolved
-        : await clientInfo.client.getInputEntity(peerResolved);
+        : await (async () => {
+          try {
+            return await clientInfo.client.getInputEntity(peerResolved as any);
+          } catch (e: unknown) {
+            if (typeof peerResolved === 'number') {
+              const resolvedEntity = await clientInfo.client.getEntity(peerResolved);
+              return await clientInfo.client.getInputEntity(resolvedEntity as any);
+            }
+            throw e;
+          }
+        })();
       if ((entity as any).className === 'InputPeerChannel') {
         await clientInfo.client.invoke(
           new Api.channels.ReadHistory({ channel: entity as any, maxId: 0 })
