@@ -297,7 +297,9 @@ services:
       - INTERNAL_AUTH_SECRET=${INTERNAL_AUTH_SECRET:-dev_internal_auth_secret}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/free}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemma-3-27b-it:free}
+      - OPENROUTER_MAX_TOKENS=${OPENROUTER_MAX_TOKENS:-2048}
+      - OPENROUTER_TIMEOUT_MS=${OPENROUTER_TIMEOUT_MS:-55000}
     depends_on:
       redis:
         condition: service_healthy

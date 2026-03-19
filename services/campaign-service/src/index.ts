@@ -38,7 +38,7 @@ async function main() {
     baseUrl: aiServiceUrl,
     name: 'ai-service',
     retries: 1,
-    timeoutMs: 25_000,
+    timeoutMs: 65_000,
   }, log);
   log.info({
     message: 'AI service client configured for campaign rephrase',

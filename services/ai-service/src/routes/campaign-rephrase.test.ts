@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp } from '@getsale/test-utils';
 import { createLogger } from '@getsale/logger';
 import { campaignRephraseRouter } from './campaign-rephrase';
+import { DEFAULT_OPENROUTER_CAMPAIGN_MODEL } from '../openrouter-campaign-config';
 
 const TEST_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const TEST_USER_ID = '22222222-2222-2222-2222-222222222222';
@@ -23,7 +24,7 @@ describe('Campaign Rephrase Router', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     process.env.OPENROUTER_API_KEY = 'sk-test-key';
-    process.env.OPENROUTER_MODEL = 'openrouter/free';
+    process.env.OPENROUTER_MODEL = DEFAULT_OPENROUTER_CAMPAIGN_MODEL;
 
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -57,10 +58,16 @@ describe('Campaign Rephrase Router', () => {
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         content: 'Rephrased message for Telegram',
-        model: 'openrouter/free',
+        model: DEFAULT_OPENROUTER_CAMPAIGN_MODEL,
         provider: 'openrouter',
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      const fetchOpts = fetchMock.mock.calls[0]?.[1] as { body?: string };
+      const sent = JSON.parse(fetchOpts?.body ?? '{}') as { max_tokens?: number; messages?: unknown[]; model?: string };
+      expect(sent.model).toBe(DEFAULT_OPENROUTER_CAMPAIGN_MODEL);
+      expect(sent.max_tokens).toBeGreaterThanOrEqual(2048);
+      expect(Array.isArray(sent.messages)).toBe(true);
+      expect((sent.messages as { role: string }[]).some((m) => m.role === 'system')).toBe(true);
     });
 
     it('returns 503 when OPENROUTER_API_KEY is not set', async () => {

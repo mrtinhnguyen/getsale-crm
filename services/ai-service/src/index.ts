@@ -1,3 +1,4 @@
+import './load-env';
 import OpenAI from 'openai';
 import { RedisClient } from '@getsale/utils';
 import { EventType } from '@getsale/events';
@@ -10,6 +11,7 @@ import { searchQueriesRouter } from './routes/search-queries';
 import { campaignRephraseRouter } from './routes/campaign-rephrase';
 import { AIRateLimiter } from './rate-limiter';
 import { DRAFT_SYSTEM, PROMPT_VERSION } from './prompts';
+import { DEFAULT_OPENROUTER_CAMPAIGN_MODEL } from './openrouter-campaign-config';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || '';
 const isPlaceholder = /your[_\-]?openai|placeholder|your_ope/i.test(OPENAI_API_KEY);
@@ -34,8 +36,12 @@ async function main() {
   }
 
   const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  const openRouterModel = process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_CAMPAIGN_MODEL;
   if (openRouterKey) {
-    log.info({ message: 'OPENROUTER_API_KEY is set; campaign rephrase endpoint is available' });
+    log.info({
+      message: 'OPENROUTER_API_KEY is set; campaign rephrase endpoint is available',
+      openrouter_model: openRouterModel,
+    });
   } else {
     log.warn({ message: 'OPENROUTER_API_KEY not set; campaign rephrase will return 503' });
   }

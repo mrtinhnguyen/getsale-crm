@@ -82,6 +82,15 @@ TELEGRAM_API_HASH=your_api_hash
 
 После выполнения пунктов выше выход в прод по текущему аудиту допустим.
 
+## AI: репрайз текста в кампаниях (OpenRouter)
+
+Для опции «рандомизация через AI» в кампаниях:
+
+1. **ai-service:** задать `OPENROUTER_API_KEY`. По умолчанию в compose: `OPENROUTER_MODEL=google/gemma-3-27b-it:free`, `OPENROUTER_MAX_TOKENS=2048`, `OPENROUTER_TIMEOUT_MS=55000`. Пул `openrouter/free` можно включить явно, но он иногда отдаёт reasoning-модели с пустым `content` — см. [ARCHITECTURE_CAMPAIGN_AI.md](ARCHITECTURE_CAMPAIGN_AI.md).
+2. **campaign-service:** `AI_SERVICE_URL` должен указывать на ai-service (в `docker-compose.server.yml` уже `http://ai-service:3005`).
+
+Локально: при запуске ai-service через `npm run dev` из `services/ai-service` переменные из корневого `.env` подгружаются автоматически (`load-env.ts`).
+
 ## Продакшн (Kubernetes)
 
 ### Требования
