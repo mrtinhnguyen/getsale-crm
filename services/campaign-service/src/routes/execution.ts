@@ -167,12 +167,21 @@ export function executionRouter({ pool, rabbitmq, log }: Deps): Router {
       }
     }
 
+    // Fresh start: need at least one INSERT. Resume from pause: participants often already exist;
+    // INSERT ... ON CONFLICT DO NOTHING yields insertedCount === 0 but rows are valid.
     if (contacts.length > 0 && insertedCount === 0) {
-      throw new AppError(
-        400,
-        'No participants could be added. Ensure contacts have Telegram ID or username and an active BD account is selected.',
-        ErrorCodes.VALIDATION
+      const existing = await pool.query(
+        'SELECT COUNT(*)::int AS c FROM campaign_participants WHERE campaign_id = $1',
+        [id]
       );
+      const existingCount = Number((existing.rows[0] as { c?: number })?.c ?? 0);
+      if (existingCount === 0) {
+        throw new AppError(
+          400,
+          'No participants could be added. Ensure contacts have Telegram ID or username and an active BD account is selected.',
+          ErrorCodes.VALIDATION
+        );
+      }
     }
 
     await pool.query(
