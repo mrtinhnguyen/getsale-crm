@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import { Logger } from '@getsale/logger';
 import { asyncHandler, requireUser, validate } from '@getsale/service-core';
 import type { z } from 'zod';
-import { AnPeriodQuerySchema, AnBdAnalyticsQuerySchema, type AnPeriodKey } from '../validation';
+import { AnPeriodQuerySchema, AnBdAnalyticsQuerySchema, AnBdTeamWeekQuerySchema, type AnPeriodKey } from '../validation';
 
 interface Deps {
   pool: Pool;
@@ -36,6 +36,15 @@ export function getPeriodBounds(period: PeriodKey): { startDate: string; endDate
     startDate: start.toISOString(),
     endDate: end.toISOString(),
   };
+}
+
+function weekDaysUtc(weekStart: string): string[] {
+  const base = new Date(`${weekStart}T00:00:00.000Z`);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(base);
+    d.setUTCDate(base.getUTCDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
 }
 
 function sanitizeCsvCell(value: unknown): string {
@@ -423,6 +432,244 @@ export function analyticsRouter({ pool, log }: Deps): Router {
     });
 
     res.json({ accounts, period: { start_date: startDate, end_date: endDate } });
+  }));
+
+  router.get('/bd/team-week', validate(AnBdTeamWeekQuerySchema, 'query'), asyncHandler(async (req, res) => {
+    const { organizationId } = req.user;
+    const { week_start: weekStart } = req.query as z.infer<typeof AnBdTeamWeekQuerySchema>;
+    const days = weekDaysUtc(weekStart);
+
+    const params: unknown[] = [organizationId, weekStart];
+
+    const teamWeekQuery = `
+      WITH dm AS (
+        SELECT DISTINCT s.bd_account_id, s.telegram_chat_id::text AS channel_id
+        FROM bd_account_sync_chats s
+        INNER JOIN bd_accounts a ON a.id = s.bd_account_id AND a.organization_id = $1
+        WHERE s.peer_type = 'user'
+      ),
+      first_outbound AS (
+        SELECT
+          m.bd_account_id,
+          m.channel_id,
+          (MIN(COALESCE(m.telegram_date, m.created_at)) AT TIME ZONE 'UTC')::date AS first_date
+        FROM messages m
+        INNER JOIN dm ON dm.bd_account_id = m.bd_account_id AND dm.channel_id = m.channel_id
+        WHERE m.organization_id = $1
+          AND m.channel = 'telegram'
+          AND m.direction = 'outbound'
+          AND m.bd_account_id IS NOT NULL
+          AND m.channel_id IS NOT NULL
+          AND m.bd_account_id IN (SELECT id FROM bd_accounts WHERE organization_id = $1)
+        GROUP BY m.bd_account_id, m.channel_id
+      ),
+      week_cohort AS (
+        SELECT fo.bd_account_id, fo.channel_id, fo.first_date
+        FROM first_outbound fo
+        WHERE fo.first_date >= $2::date
+          AND fo.first_date < ($2::date + interval '7 days')
+      ),
+      per_chat AS (
+        SELECT
+          wc.bd_account_id,
+          wc.channel_id,
+          wc.first_date,
+          (EXISTS (
+            SELECT 1 FROM messages m2
+            WHERE m2.bd_account_id = wc.bd_account_id AND m2.channel_id = wc.channel_id
+              AND m2.organization_id = $1 AND m2.direction = 'outbound'
+              AND (m2.unread = false OR m2.status = 'read')
+          )) AS has_read,
+          (EXISTS (
+            SELECT 1 FROM messages m2
+            WHERE m2.bd_account_id = wc.bd_account_id AND m2.channel_id = wc.channel_id
+              AND m2.organization_id = $1 AND m2.direction = 'inbound'
+          )) AS has_replied
+        FROM week_cohort wc
+      )
+      SELECT
+        bd_account_id,
+        first_date,
+        COUNT(*)::int AS new_chats,
+        COUNT(*) FILTER (WHERE NOT has_read)::int AS not_read,
+        COUNT(*) FILTER (WHERE has_read AND NOT has_replied)::int AS read_no_reply,
+        COUNT(*) FILTER (WHERE has_replied)::int AS replied
+      FROM per_chat
+      GROUP BY bd_account_id, first_date
+      ORDER BY bd_account_id, first_date
+    `;
+
+    const dataFromQuery = `
+      WITH dm AS (
+        SELECT DISTINCT s.bd_account_id, s.telegram_chat_id::text AS channel_id
+        FROM bd_account_sync_chats s
+        INNER JOIN bd_accounts a ON a.id = s.bd_account_id AND a.organization_id = $1
+        WHERE s.peer_type = 'user'
+      )
+      SELECT MIN(COALESCE(m.telegram_date, m.created_at)) AS min_ts
+      FROM messages m
+      INNER JOIN dm ON dm.bd_account_id = m.bd_account_id AND dm.channel_id = m.channel_id
+      WHERE m.organization_id = $1
+        AND m.channel = 'telegram'
+        AND m.direction = 'outbound'
+        AND m.bd_account_id IS NOT NULL
+        AND m.channel_id IS NOT NULL
+    `;
+
+    const [aggRes, accountsRes, minRes] = await Promise.all([
+      pool.query(teamWeekQuery, params),
+      pool.query(
+        `SELECT a.id, COALESCE(NULLIF(TRIM(a.display_name), ''), a.username, a.phone_number, a.telegram_id::text) AS display_name
+         FROM bd_accounts a WHERE a.organization_id = $1 ORDER BY display_name NULLS LAST, a.id`,
+        [organizationId]
+      ),
+      pool.query(dataFromQuery, [organizationId]),
+    ]);
+
+    const rawRows = aggRes.rows as {
+      bd_account_id: string;
+      first_date: Date | string;
+      new_chats: number;
+      not_read: number;
+      read_no_reply: number;
+      replied: number;
+    }[];
+
+    const normDate = (d: Date | string): string =>
+      typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
+
+    type Cell = {
+      new_chats: number;
+      not_read: number;
+      read_no_reply: number;
+      replied: number;
+      pct_not_read: number;
+      pct_read_no_reply: number;
+      pct_replied: number;
+    };
+
+    const pct = (n: number, total: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+
+    const toCell = (r: { new_chats: number; not_read: number; read_no_reply: number; replied: number }): Cell => ({
+      new_chats: r.new_chats,
+      not_read: r.not_read,
+      read_no_reply: r.read_no_reply,
+      replied: r.replied,
+      pct_not_read: pct(r.not_read, r.new_chats),
+      pct_read_no_reply: pct(r.read_no_reply, r.new_chats),
+      pct_replied: pct(r.replied, r.new_chats),
+    });
+
+    const cells = new Map<string, Map<string, Cell>>();
+    for (const row of rawRows) {
+      const dateStr = normDate(row.first_date);
+      const bd = row.bd_account_id;
+      if (!cells.has(bd)) cells.set(bd, new Map());
+      cells.get(bd)!.set(dateStr, toCell(row));
+    }
+
+    const emptyCell = (): Cell => ({
+      new_chats: 0,
+      not_read: 0,
+      read_no_reply: 0,
+      replied: 0,
+      pct_not_read: 0,
+      pct_read_no_reply: 0,
+      pct_replied: 0,
+    });
+
+    const accounts = (accountsRes.rows as { id: string; display_name: string }[]).map((a) => ({
+      bd_account_id: a.id,
+      account_display_name: a.display_name || a.id,
+    }));
+
+    const matrix: { bd_account_id: string; by_date: Record<string, Cell> }[] = accounts.map((a) => {
+      const byDate: Record<string, Cell> = {};
+      const row = cells.get(a.bd_account_id);
+      for (const d of days) {
+        byDate[d] = row?.get(d) ?? emptyCell();
+      }
+      return { bd_account_id: a.bd_account_id, by_date: byDate };
+    });
+
+    const dayTotals: Record<string, Cell> = {};
+    for (const d of days) {
+      let nc = 0;
+      let nr = 0;
+      let rnr = 0;
+      let rep = 0;
+      for (const a of accounts) {
+        const c = cells.get(a.bd_account_id)?.get(d);
+        if (c) {
+          nc += c.new_chats;
+          nr += c.not_read;
+          rnr += c.read_no_reply;
+          rep += c.replied;
+        }
+      }
+      dayTotals[d] = toCell({ new_chats: nc, not_read: nr, read_no_reply: rnr, replied: rep });
+    }
+
+    const avgPctOverDays = (getter: (c: Cell) => number): number => {
+      const sum = days.reduce((s, d) => s + getter(dayTotals[d] ?? emptyCell()), 0);
+      return Math.round((sum / 7) * 10) / 10;
+    };
+
+    const weekGrand: Cell = {
+      new_chats: days.reduce((s, d) => s + (dayTotals[d]?.new_chats ?? 0), 0),
+      not_read: 0,
+      read_no_reply: 0,
+      replied: 0,
+      pct_not_read: avgPctOverDays((c) => c.pct_not_read),
+      pct_read_no_reply: avgPctOverDays((c) => c.pct_read_no_reply),
+      pct_replied: avgPctOverDays((c) => c.pct_replied),
+    };
+
+    const bdWeek: { bd_account_id: string; week: Cell }[] = accounts.map((a) => {
+      let sumChats = 0;
+      let pnr = 0;
+      let prnr = 0;
+      let pr = 0;
+      const row = cells.get(a.bd_account_id);
+      for (const d of days) {
+        const c = row?.get(d) ?? emptyCell();
+        sumChats += c.new_chats;
+        pnr += c.pct_not_read;
+        prnr += c.pct_read_no_reply;
+        pr += c.pct_replied;
+      }
+      return {
+        bd_account_id: a.bd_account_id,
+        week: {
+          new_chats: sumChats,
+          not_read: 0,
+          read_no_reply: 0,
+          replied: 0,
+          pct_not_read: Math.round((pnr / 7) * 10) / 10,
+          pct_read_no_reply: Math.round((prnr / 7) * 10) / 10,
+          pct_replied: Math.round((pr / 7) * 10) / 10,
+        },
+      };
+    });
+
+    const minTs = minRes.rows[0]?.min_ts as Date | string | null | undefined;
+    const dataAvailableFrom =
+      minTs == null
+        ? null
+        : typeof minTs === 'string'
+          ? minTs.slice(0, 10)
+          : minTs.toISOString().slice(0, 10);
+
+    res.json({
+      week_start: weekStart,
+      days,
+      accounts,
+      matrix,
+      day_totals: dayTotals,
+      bd_week: bdWeek,
+      week_grand: weekGrand,
+      data_available_from: dataAvailableFrom,
+    });
   }));
 
   // Export data

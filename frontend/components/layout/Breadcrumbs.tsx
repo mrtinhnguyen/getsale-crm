@@ -16,6 +16,7 @@ const PATH_LABELS: Record<string, string> = {
   discovery: 'nav.contactDiscovery',
   analytics: 'nav.analytics',
   bd: 'nav.analyticsBd',
+  'team-week': 'analyticsBd.breadcrumbTeamWeek',
   team: 'nav.team',
   settings: 'nav.settings',
 };
